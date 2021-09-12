@@ -18,7 +18,7 @@ type MTSMessage struct {
 
 	Reply bool `json:"reply"`
 
-	IsError bool `json: "isError"`
+	IsError bool `json: "Error"`
 
 	Jwt string `json: "jwt"`
 
