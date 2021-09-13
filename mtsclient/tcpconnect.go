@@ -88,7 +88,7 @@ func (connect *TCPConnect) loginWithUsernameAndPassword() bool {
 
 	kAppRMS := []byte{79, 157, 102, 210, 83, 34, 156, 117, 223, 190, 187, 27, 28, 63, 94, 214, 4, 98, 123, 98, 65, 20, 143, 60, 50, 62, 162, 115, 7, 46, 119, 8}
 	username := "mtstest"
-	password := "Test123"
+	password := "Test1234"
 
 	mtsLogin := MtsLogin{
 		AppID:    enum.RMSServer,
@@ -158,15 +158,22 @@ func (connect *TCPConnect) send(msg []byte, timeOutMs int) model.MTSResult {
 
 		log.Printf("Send: %s", msg)
 
-		buff := make([]byte, 1024)
-		n, err := connect.Conn.Read(buff)
-		if err != nil {
-			fmt.Println("some error while writing the data to the connection : ", err)
-			// panic(err)
-			break
-		}
+		// read from socket
+		// (assume response is 'Test\n')
+		reply := make([]byte, 1024)
+		connect.Conn.Read(reply)
 
-		log.Printf("Receive: %s", buff[:n])
+		log.Println(string(reply))
+
+		// buff := make([]byte, 1024)
+		// n, err := connect.Conn.Read(buff)
+		// if err != nil {
+		// 	fmt.Println("some error while writing the data to the connection : ", err)
+		// 	// panic(err)
+		// 	break
+		// }
+
+		// log.Printf("Receive: %s", buff[:n])
 	}
 
 	return model.MTSResult{}
