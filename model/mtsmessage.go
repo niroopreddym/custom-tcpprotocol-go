@@ -18,9 +18,9 @@ type MTSMessage struct {
 
 	Reply bool `json:"reply"`
 
-	IsError bool `json: "Error"`
+	JWT string `json:"jwt"`
 
-	Jwt string `json: "jwt"`
+	Data []byte `json:"data"`
 
-	Data []byte `json: "data"`
+	IsError bool `json:"isError"`
 }

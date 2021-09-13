@@ -3,6 +3,8 @@ package mtsclient
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"os"
 	"strconv"
@@ -68,12 +70,12 @@ func GetConnection(connectionString string) net.Conn {
 		os.Exit(1)
 	}
 
-	// defer conn.Close()
 	return conn
 }
 
 //ConnectAndLogin connects and login the user
 func (connect *TCPConnect) ConnectAndLogin() error {
+
 	isAuthenticated := connect.loginWithUsernameAndPassword()
 	if !isAuthenticated {
 		fmt.Printf("UnAuthorized login creds")
@@ -86,7 +88,7 @@ func (connect *TCPConnect) loginWithUsernameAndPassword() bool {
 
 	kAppRMS := []byte{79, 157, 102, 210, 83, 34, 156, 117, 223, 190, 187, 27, 28, 63, 94, 214, 4, 98, 123, 98, 65, 20, 143, 60, 50, 62, 162, 115, 7, 46, 119, 8}
 	username := "mtstest"
-	password := "Test1234"
+	password := "Test123"
 
 	mtsLogin := MtsLogin{
 		AppID:    enum.RMSServer,
@@ -147,14 +149,24 @@ func (connect *TCPConnect) send(msg []byte, timeOutMs int) model.MTSResult {
 	//open the connection and send the data here
 
 	for {
-		n, err := connect.Conn.Write(msg)
-		fmt.Printf("written length of bytes: %d", n)
+		_, err := io.Writer.Write(connect.Conn, msg)
 		if err != nil {
-			fmt.Errorf("some error while writing the data to the connection : ", err)
+			fmt.Println("some error while writing the data to the connection : ", err)
+			// panic(err)
 			break
 		}
 
-		// connect.Conn.Close() // we're finished with this client
+		log.Printf("Send: %s", msg)
+
+		buff := make([]byte, 1024)
+		n, err := connect.Conn.Read(buff)
+		if err != nil {
+			fmt.Println("some error while writing the data to the connection : ", err)
+			// panic(err)
+			break
+		}
+
+		log.Printf("Receive: %s", buff[:n])
 	}
 
 	return model.MTSResult{}
@@ -200,7 +212,7 @@ func (connect *TCPConnect) CreateRequest(requestType enum.MTSRequest, attrRoute 
 	}
 
 	if attrRoute != nil {
-		mtsMessage.Jwt = *jwt
+		mtsMessage.JWT = *jwt
 	}
 
 	return mtsMessage

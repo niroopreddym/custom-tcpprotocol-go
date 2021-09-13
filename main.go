@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	tcpConnect := mtsclient.NewTCPConnect("127.0.0.1", 10001, 10000)
+	tcpConnect := mtsclient.NewTCPConnect("localhost", 10001, 10000)
 	tcpConnect.ConnectAndLogin()
 	fmt.Println(tcpConnect)
 
