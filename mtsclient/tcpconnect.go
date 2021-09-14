@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/niroopreddym/custom-tcpprotocol-go/enum"
 	"github.com/niroopreddym/custom-tcpprotocol-go/model"
@@ -67,8 +69,7 @@ func GetConnection(connectionString string) net.Conn {
 	// conn, err := net.Dial("tcp", "localhost:10001")
 	// ctx, cancel := context.WithTimeout(context.Background(), 1000000*time.Millisecond)
 	// defer cancel()
-
-	conn, err := net.Dial("tcp", connectionString)
+	conn, err := net.DialTimeout("tcp", connectionString, 10000*time.Millisecond)
 	if err != nil {
 		fmt.Println("error occured while establishing the connection: ", err)
 		os.Exit(1)
@@ -175,9 +176,9 @@ func ReadFromConn(conn net.Conn, delim byte) (string, error) {
 }
 
 //WriteToConn writes to connection
-func WriteToConn(conn net.Conn, content string) (int, error) {
-	writer := bufio.NewWriter(conn)
-	number, err := writer.WriteString(content)
+func WriteToConn(conn net.Conn, content []byte) (int, error) {
+	writer := bufio.NewWriterSize(conn, 1<<12)
+	number, err := writer.Write(content)
 	if err == nil {
 		err = writer.Flush()
 	}
@@ -195,15 +196,21 @@ func (connect *TCPConnect) send(msg []byte, timeOutMs int) model.MTSResult {
 
 	for {
 		//sending message
-		_, err := connect.Conn.Write(msg)
+		num, err := WriteToConn(connect.Conn, msg)
 		if err != nil {
-			fmt.Println("some error while writing the data to the connection : ", err)
+			log.Printf("Sender: Write Error: %s\n", err)
 			break
 		}
+		log.Printf("Sender: Wrote %d byte(s)\n", num)
 
 		fmt.Println("Reading the response")
-		message, _ := bufio.NewReader(connect.Conn).ReadBytes('\n')
-		fmt.Println(message)
+
+		respContent, err := ReadFromConn(connect.Conn, DELIMITER)
+		if err != nil {
+			log.Printf("Sender: Read error: %s", err)
+			break
+		}
+		log.Printf("Sender: Received content: %s\n", respContent)
 	}
 
 	return model.MTSResult{}
