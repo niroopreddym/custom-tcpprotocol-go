@@ -1,10 +1,11 @@
 package mtsclient
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"strconv"
@@ -34,6 +35,9 @@ const (
 	//MaxUint is max unsigned int value
 	MaxUint = 1<<UintSize - 1 // 1<<32 - 1 or 1<<64 - 1
 )
+
+//MaxMessageLength max chunk size that can be written to the server
+const MaxMessageLength = 1 << 22 //  1 x 2 ^ 22 = 4 MB
 
 //TCPConnect logins
 type TCPConnect struct {
@@ -134,6 +138,7 @@ func (connect *TCPConnect) Login(mtsLoginMessage model.MTSMessage) model.MTSResu
 func (connect *TCPConnect) Send(mtsMessage model.MTSMessage, timeOutMs int) model.MTSResult {
 
 	mtsMessageByteData, err := json.Marshal(mtsMessage)
+	fmt.Printf("MTS msg before sending: %v", string(mtsMessageByteData))
 	if err != nil {
 		fmt.Println("error in marshalling the MTSMessage Data: ", err)
 	}
@@ -142,49 +147,67 @@ func (connect *TCPConnect) Send(mtsMessage model.MTSMessage, timeOutMs int) mode
 	return response
 }
 
-func (connect *TCPConnect) send(msg []byte, timeOutMs int) model.MTSResult {
-	//find a way to prepare the data
-	// var data = PrepareData(msg)
+const (
+	//DELIMITER representing the end of message
+	DELIMITER byte = '\n'
+	//QUIT_SIGN when to close the client interaction
+	QUIT_SIGN = "quit!"
+)
 
-	//open the connection and send the data here
+//ReadFromConn reads from conn
+func ReadFromConn(conn net.Conn, delim byte) (string, error) {
+	reader := bufio.NewReader(conn)
+	var buffer bytes.Buffer
+	for {
+		ba, isPrefix, err := reader.ReadLine()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return "", err
+		}
+		buffer.Write(ba)
+		if !isPrefix {
+			break
+		}
+	}
+	return buffer.String(), nil
+}
+
+//WriteToConn writes to connection
+func WriteToConn(conn net.Conn, content string) (int, error) {
+	writer := bufio.NewWriter(conn)
+	number, err := writer.WriteString(content)
+	if err == nil {
+		err = writer.Flush()
+	}
+	return number, err
+}
+
+func (connect *TCPConnect) send(msg []byte, timeOutMs int) model.MTSResult {
+
+	defer func() {
+		if r := recover(); r != nil {
+			err := r.(error)
+			fmt.Println(err)
+		}
+	}()
 
 	for {
-		_, err := io.Writer.Write(connect.Conn, msg)
+		//sending message
+		_, err := connect.Conn.Write(msg)
 		if err != nil {
 			fmt.Println("some error while writing the data to the connection : ", err)
-			// panic(err)
 			break
 		}
 
-		log.Printf("Send: %s", msg)
-
-		// read from socket
-		// (assume response is 'Test\n')
-		reply := make([]byte, 1024)
-		connect.Conn.Read(reply)
-
-		log.Println(string(reply))
-
-		// buff := make([]byte, 1024)
-		// n, err := connect.Conn.Read(buff)
-		// if err != nil {
-		// 	fmt.Println("some error while writing the data to the connection : ", err)
-		// 	// panic(err)
-		// 	break
-		// }
-
-		// log.Printf("Receive: %s", buff[:n])
+		fmt.Println("Reading the response")
+		message, _ := bufio.NewReader(connect.Conn).ReadBytes('\n')
+		fmt.Println(message)
 	}
 
 	return model.MTSResult{}
 }
-
-//MaxMessageLength max chunk size that can be written to the server
-const MaxMessageLength = 1 << 22 //  1 x 2 ^ 22 = 4 MB
-
-// func PrepareData() {
-
-// }
 
 //CreateRequest creates a MTSMessage for user login
 func (connect *TCPConnect) CreateRequest(requestType enum.MTSRequest, attrRoute *string, srcID int, dstID int, isError bool, jwt *string, data []byte) model.MTSMessage {
@@ -200,7 +223,6 @@ func (connect *TCPConnect) CreateRequest(requestType enum.MTSRequest, attrRoute 
 			lastRPCID = lastRPCID + 1
 		}
 
-		// LastRpcId = LastRpcId == int.MaxValue ? 1 : LastRpcId + 1;
 		rpcID = lastRPCID
 	}
 
@@ -229,30 +251,3 @@ func (connect *TCPConnect) CreateRequest(requestType enum.MTSRequest, attrRoute 
 func StrToPointer(str string) *string {
 	return &str
 }
-
-// //Send senfs the message to client
-// func (login *TCPConnect) Send(mtsMessage model.MTSMessage) {
-// 	fmt.Println(mtsMessage)
-// 	mutex := sync.Mutex{}
-// 	mutex.Lock()
-// 	defer mutex.Unlock()
-// 	data, err := json.Marshal(mtsMessage)
-// 	if err != nil {
-// 		fmt.Println(err)
-// 	}
-
-// 	Send(data)
-// }
-
-// func send(byte[] msg){
-// 	var data = PrepareData(msg)
-// 	fmt.Printf("Sending message, data size %d", len(data))
-
-// 	if (Stream.CanWrite)
-// 		Stream.BeginWrite(data, 0, data.Length, WriteComplete, this)
-// 	else
-// 	{
-// 		Log?.LogWarning($"{LoggerMods.CallerInfo()}Cannot write to stream")
-// 		throw new MTSConnectionClosedException("Cannot write to stream")
-// 	}
-// }
