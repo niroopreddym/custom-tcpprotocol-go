@@ -2,7 +2,6 @@ package mtsclient
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,10 +52,15 @@ type TCPConnect struct {
 //NewTCPConnect ctor
 func NewTCPConnect(hostname string, port int, defaultTimeOutMs int) *TCPConnect {
 	connectionString := strings.Join([]string{hostname, strconv.Itoa(port)}, ":")
-	conn := GetConnection(connectionString)
+	conn, err := GetConnection(connectionString)
+	if err != nil {
+		os.Exit(1)
+	}
 
 	return &TCPConnect{
-		MTSClient:        MTSClient{},
+		MTSClient: MTSClient{
+			Connected: true,
+		},
 		Hostname:         hostname,
 		Port:             port,
 		DefaultTimeOutMs: defaultTimeOutMs,
@@ -65,17 +69,37 @@ func NewTCPConnect(hostname string, port int, defaultTimeOutMs int) *TCPConnect 
 }
 
 //GetConnection instantiates and gets the connection
-func GetConnection(connectionString string) net.Conn {
-	// conn, err := net.Dial("tcp", "localhost:10001")
-	// ctx, cancel := context.WithTimeout(context.Background(), 1000000*time.Millisecond)
-	// defer cancel()
+func GetConnection(connectionString string) (net.Conn, error) {
 	conn, err := net.DialTimeout("tcp", connectionString, 10000*time.Millisecond)
 	if err != nil {
 		fmt.Println("error occured while establishing the connection: ", err)
-		os.Exit(1)
+		return nil, err
 	}
 
-	return conn
+	return conn, err
+}
+
+//ConnectComplete runs the stream logic after the connection is successfull
+func (connect *TCPConnect) ConnectComplete() {
+	connect.StartReader()
+}
+
+//StartReader starts reading the stream via tcp connection
+func (connect *TCPConnect) StartReader() {
+	if connect.MTSClient.UseTLS {
+		StartTLS()
+	}
+}
+
+//StartTLS validate the certificate with client hostname
+func StartTLS() {
+
+}
+
+//WithTLS connects with TLS
+func (connect *TCPConnect) WithTLS(certificate []byte) {
+	connect.MTSClient.UseTLS = true
+	connect.MTSClient.ClientCertificate = certificate
 }
 
 //ConnectAndLogin connects and login the user
@@ -151,28 +175,51 @@ func (connect *TCPConnect) Send(mtsMessage model.MTSMessage, timeOutMs int) mode
 const (
 	//DELIMITER representing the end of message
 	DELIMITER byte = '\n'
-	//QUIT_SIGN when to close the client interaction
-	QUIT_SIGN = "quit!"
 )
+
+// //ReadFromConn reads from conn
+// func ReadFromConn(conn net.Conn, delim byte) (string, error) {
+// 	reader := bufio.NewReader(conn)
+// 	var buffer bytes.Buffer
+// 	for {
+// 		ba, isPrefix, err := reader.ReadLine()
+// 		if err != nil {
+// 			if err == io.EOF {
+// 				break
+// 			}
+// 			return "", err
+// 		}
+// 		buffer.Write(ba)
+// 		if !isPrefix {
+// 			break
+// 		}
+// 	}
+// 	return buffer.String(), nil
+// }
 
 //ReadFromConn reads from conn
 func ReadFromConn(conn net.Conn, delim byte) (string, error) {
-	reader := bufio.NewReader(conn)
-	var buffer bytes.Buffer
+
+	// useful block
+	buff := make([]byte, 50)
+	c := bufio.NewReader(conn)
+
 	for {
-		ba, isPrefix, err := reader.ReadLine()
+		// read a single byte which contains the message length
+		size, err := c.ReadByte()
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
 			return "", err
 		}
-		buffer.Write(ba)
-		if !isPrefix {
-			break
+
+		// read the full message, or return an error
+		_, err = io.ReadFull(c, buff[:int(size)])
+		if err != nil {
+			return "", err
 		}
+
+		fmt.Printf("received %x\n", buff[:int(size)])
 	}
-	return buffer.String(), nil
+
 }
 
 //WriteToConn writes to connection
@@ -183,6 +230,34 @@ func WriteToConn(conn net.Conn, content []byte) (int, error) {
 		err = writer.Flush()
 	}
 	return number, err
+}
+
+//SendTestOPLPayload sends the test payload to the server
+func (connect *TCPConnect) SendTestOPLPayload(jwt *string) {
+	mtsOPLPayload := model.MtsOplPayload{
+		RoomID:          "101",
+		ProxyMACAddress: "",
+		Data:            make([]byte, 16),
+	}
+
+	strMtsOPLPayload, _ := json.Marshal(mtsOPLPayload)
+
+	mtsLoginMessage := connect.CreateRequest(
+		enum.OPL,
+		nil,
+		MTSRMSServer,
+		MTSServer,
+		false,
+		nil,
+		strMtsOPLPayload,
+	)
+
+	connect.SendOPLPayload(mtsLoginMessage)
+}
+
+//SendOPLPayload Send an OPL Message
+func (connect *TCPConnect) SendOPLPayload(mtsOPLMessage model.MTSMessage) {
+	connect.Send(mtsOPLMessage, 1000000)
 }
 
 func (connect *TCPConnect) send(msg []byte, timeOutMs int) model.MTSResult {
@@ -210,6 +285,7 @@ func (connect *TCPConnect) send(msg []byte, timeOutMs int) model.MTSResult {
 			log.Printf("Sender: Read error: %s", err)
 			break
 		}
+
 		log.Printf("Sender: Received content: %s\n", respContent)
 	}
 
