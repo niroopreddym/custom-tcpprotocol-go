@@ -2,6 +2,7 @@ package mtsclient
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,7 +11,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/niroopreddym/custom-tcpprotocol-go/enum"
 	"github.com/niroopreddym/custom-tcpprotocol-go/model"
@@ -70,7 +70,25 @@ func NewTCPConnect(hostname string, port int, defaultTimeOutMs int) *TCPConnect 
 
 //GetConnection instantiates and gets the connection
 func GetConnection(connectionString string) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", connectionString, 10000*time.Millisecond)
+	tlsConfig := &tls.Config{}
+
+	tcp, err := net.Dial("tcp", connectionString)
+	if err != nil {
+		log.Fatal("error whwn dialing the connection ", err)
+	}
+
+	serverCert, err := tlsConfig.GetCertificate(&tls.ClientHelloInfo{
+		ServerName: "onity.net",
+		Conn:       tcp,
+	})
+
+	if err != nil {
+		log.Fatal("cannot retrive the server cert ", err)
+	}
+
+	fmt.Println(serverCert)
+
+	conn, err := tls.Dial("tcp", connectionString, tlsConfig)
 	if err != nil {
 		fmt.Println("error occured while establishing the connection: ", err)
 		return nil, err
