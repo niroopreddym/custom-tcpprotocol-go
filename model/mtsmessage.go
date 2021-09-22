@@ -6,7 +6,7 @@ import "github.com/niroopreddym/custom-tcpprotocol-go/enum"
 type MTSMessage struct {
 	Version byte `json:"version"`
 
-	AttributeRoute string `json:"attributeRoute"`
+	AttributeRoute *string `json:"attributeRoute"`
 
 	Route enum.MTSRequest `json:"route"`
 
@@ -18,9 +18,9 @@ type MTSMessage struct {
 
 	Reply bool `json:"reply"`
 
-	JWT string `json:"jwt"`
+	JWT *string `json:"jwt"`
 
 	Data []byte `json:"data"`
 
-	IsError bool `json:"isError"`
+	IsError bool `json:"error"`
 }
