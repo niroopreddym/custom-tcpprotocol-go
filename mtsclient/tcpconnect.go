@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -255,12 +256,26 @@ func (connect *TCPConnect) loginWithUsernameAndPassword() (*model.MTSMessage, bo
 	mtsIntialResult, err := connect.LoginGetCert(mtsLoginMessage)
 	if err != nil {
 		fmt.Println(err)
+		// return nil, false
+	}
+
+	trimmedResponse := `{"version":1,"attributeRoute":"A","route":9,"srcId":1,"dstId":2,"rpcId":1,"reply":false,"error":false,"jwt":null,"data":"AAAAAA=="}`
+
+	log.Printf("Sender: Received content: %s\n", trimmedResponse)
+	mtsResponseMessage := model.MTSMessage{}
+
+	err = json.Unmarshal([]byte(trimmedResponse), &mtsResponseMessage)
+	if err != nil {
+		fmt.Println("unmarshal resposne error : ", err)
 		return nil, false
 	}
 
 	fmt.Printf("Result: %v", mtsIntialResult)
 
-	connect.SendAcknowledgmentToServer(mtsIntialResult)
+	ackResponse, err := connect.SendAcknowledgmentToServer(&mtsResponseMessage)
+	// ackResponse, err := connect.SendAcknowledgmentToServer(mtsIntialResult)
+	fmt.Println(err)
+	fmt.Println(ackResponse)
 	// ClientCertificate = mtsResult.Data.ClientCertificate
 	// JWT = mtsResult.Jwt
 
@@ -355,7 +370,13 @@ func (connect *TCPConnect) GetCertificate(mtsMessage model.MTSMessage, timeOutMs
 		return nil, err
 	}
 
-	response, err := connect.send(mtsMessageByteData, timeOutMs)
+	err = connect.send(mtsMessageByteData, timeOutMs)
+	if err != nil {
+		fmt.Println(err)
+		return nil, err
+	}
+
+	response, err := connect.Receieve()
 	if err != nil {
 		fmt.Println(err)
 		return nil, err
@@ -372,7 +393,13 @@ func (connect *TCPConnect) Send(mtsMessage model.MTSMessage, timeOutMs int) (*mo
 		fmt.Println("error in marshalling the MTSMessage Data: ", err)
 	}
 
-	response, err := connect.send(mtsMessageByteData, timeOutMs)
+	err = connect.send(mtsMessageByteData, timeOutMs)
+	if err != nil {
+		fmt.Println(err)
+		return nil, err
+	}
+
+	response, err := connect.Receieve()
 	if err != nil {
 		fmt.Println(err)
 		return nil, err
@@ -388,68 +415,35 @@ const (
 )
 
 //ReadFromConn reads from conn
-// func ReadFromConn(conn net.Conn, delim byte) (string, error) {
-
-// 	// useful block
-// 	buff := make([]byte, 4000)
-// 	c := bufio.NewReader(conn)
-
-// 	for {
-// 		// read a single byte which contains the message length
-// 		size, err := c.ReadByte()
-// 		if err != nil {
-// 			if err == io.EOF {
-// 				break
-// 			}
-
-// 			return "", err
-// 		}
-
-// 		// read the full message, or return an error
-// 		_, err = io.ReadFull(c, buff[:int(size)])
-// 		if err != nil {
-// 			return "", err
-// 		}
-
-// 		fmt.Printf("received %x\n", buff[:int(size)])
-// 		fmt.Println(string(buff[:int(size)]))
-// 	}
-
-// 	fmt.Println(string(buff))
-
-// 	return string(buff), nil
-
-// }
-
-//ReadFromConn reads from conn
-func ReadFromConn(conn net.Conn, delim byte) (string, error) {
-	// byteArr, err := ioutil.ReadAll(conn)
+func ReadFromConn(conn net.Conn, delim byte) ([]byte, error) {
 	reader := bufio.NewReader(conn)
 	var buffer bytes.Buffer
+
 	for {
 		ba, isPrefix, err := reader.ReadLine()
 		if err != nil {
 			if err == io.EOF {
 				if buffer.Len() == 0 {
 					fmt.Println("conn closed....", err)
-					return "", err
+					return nil, err
 				}
 
 				break
 			}
 
-			return "", err
+			return nil, err
 		}
 
 		buffer.Write(ba)
+
+		fmt.Println(buffer.String())
 		if !isPrefix {
 			break
 		}
 	}
 
-	return standardizeSpaces(buffer.String()), nil
-	// fmt.Println(byteArr)
-	// return string(byteArr), err
+	return buffer.Bytes(), nil
+	// return standardizeSpaces(buffer.String()), nil
 }
 
 func standardizeSpaces(s string) string {
@@ -494,7 +488,7 @@ func (connect *TCPConnect) SendOPLPayload(mtsOPLMessage model.MTSMessage) {
 	connect.Send(mtsOPLMessage, 1000000)
 }
 
-func (connect *TCPConnect) send(msg []byte, timeOutMs int) (*model.MTSMessage, error) {
+func (connect *TCPConnect) send(msg []byte, timeOutMs int) error {
 	defer func() {
 		if r := recover(); r != nil {
 			err := r.(error)
@@ -502,37 +496,91 @@ func (connect *TCPConnect) send(msg []byte, timeOutMs int) (*model.MTSMessage, e
 		}
 	}()
 
+	data := PrepareData(msg)
 	//sending message
 	fmt.Println("json:", string(msg))
 
-	fmt.Println("byte array : ", msg)
-	num, err := WriteToConn(connect.Conn, msg)
+	fmt.Println("byte array : ", data)
+	num, err := WriteToConn(connect.Conn, data)
 	if err != nil {
-		return nil, fmt.Errorf("Sender: Write Error: %w", err)
+		return fmt.Errorf("Sender: Write Error: %w", err)
 	}
+
 	log.Printf("Sender: Wrote %d byte(s)\n", num)
+	return nil
+}
 
-	fmt.Println("Reading the response")
+//MAXMESSAGELENGTH is the length limitation for the message to be sent to the server
+const MAXMESSAGELENGTH = 1 << 22 // 2^2 * 2^10 * 2^10 = 4 MiB
 
-	var respContent string
+//PrepareData prepares the data to be sent
+func PrepareData(msg []byte) []byte {
+	// Expected length should be uint (TA8319)
+	msgLength := len(msg)
+	log.Println("Send message length ", msgLength)
 
-	respContent, err = ReadFromConn(connect.Conn, DELIMITER)
-	if err != nil {
-		connect.Conn.Close()
-		fmt.Println(err)
-		// return nil, fmt.Errorf("Sender: Read error: %w", err)
+	if msgLength > MAXMESSAGELENGTH {
+		var errorMsg = fmt.Sprintf("Messages longer than %d are not supported.", MAXMESSAGELENGTH)
+		log.Println(errorMsg)
+		log.Panic("msglength exception")
 	}
 
-	trimmedResponse := strings.TrimSpace(respContent)
-	trimmedResponse = `{"version":1,"attributeRoute":"A","route":9,"srcId":1,"dstId":2,"rpcId":1,"reply":false,"error":false,"jwt":null,"data":"AAAAAA=="}`
+	//get bytes fro msgLength for now hard code to 4 i.e., BitConverter.GetBytes(msgLength)
+	byteArrayLen := convertIntToByte(int32(msgLength))
+	data := make([]byte, len(byteArrayLen)+msgLength)
 
-	log.Printf("Sender: Received content: %s\n", trimmedResponse)
+	copy(data, byteArrayLen)
+	copy(data[len(byteArrayLen):], msg)
+
+	return data
+}
+
+func convertIntToByte(msgLength int32) []byte {
+	buff := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buff, uint32(msgLength))
+	return buff
+}
+
+//Receieve receives the response
+func (connect *TCPConnect) Receieve() (*model.MTSMessage, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err := r.(error)
+			fmt.Println(err)
+		}
+	}()
+
 	mtsResponseMessage := model.MTSMessage{}
 
-	err = json.Unmarshal([]byte(trimmedResponse), &mtsResponseMessage)
-	if err != nil {
-		fmt.Println("unmarshal resposne error : ", err)
-		return nil, err
+	for {
+		fmt.Println("Reading the response")
+
+		respContent, err := ReadFromConn(connect.Conn, DELIMITER)
+		if err != nil {
+			// connect.Conn.Close()
+			fmt.Println(err)
+			return nil, fmt.Errorf("Sender: Read error: %w", err)
+		}
+
+		trimmedResponse := string(respContent[4:])
+		fmt.Println(trimmedResponse)
+
+		trimmedResponse = `{"version":1,"attributeRoute":"A","route":9,"srcId":1,"dstId":2,"rpcId":1,"reply":false,"error":false,"jwt":null,"data":"AAAAAA=="}`
+
+		log.Printf("Sender: Received content: %s\n", trimmedResponse)
+		mtsResponseMessage := model.MTSMessage{}
+
+		err = json.Unmarshal([]byte(trimmedResponse), &mtsResponseMessage)
+		if err != nil {
+			fmt.Println("unmarshal resposne error : ", err)
+			return nil, err
+		}
+
+		if mtsResponseMessage.Route == 3 {
+			break
+		}
+
+		go connect.SendAcknowledgmentToServer(&mtsResponseMessage)
 	}
 
 	return &mtsResponseMessage, nil
