@@ -2,7 +2,6 @@ package mtsclient
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
@@ -69,6 +68,16 @@ func NewTCPConnect(hostname string, port int, defaultTimeOutMs int) *TCPConnect 
 		DefaultTimeOutMs: defaultTimeOutMs,
 		Conn:             conn,
 	}
+}
+
+var _dataBuffer []byte
+
+//Init inits few variables
+func (connect *TCPConnect) Init() {
+	connect.MTSClient.ReadBuffer = make([]byte, 32*1024) // TODO, this might be too small! (try to keep things to 16K)
+	_dataBuffer = make([]byte, 4)
+	connect.MTSClient.BufferLen = 0
+	connect.MTSClient.ExpectedLen = 0
 }
 
 //GetConnection instantiates and gets the connection
@@ -344,12 +353,6 @@ func (connect *TCPConnect) CreateResponse(requestMessage *model.MTSMessage, resp
 	return mtsMessage
 }
 
-//  private MTSMessage CreateResponse(MTSMessage requestMessage, MTSRequest responseType, string attrRoute, bool error, string jwt, byte[] data)
-//         {
-//             return new MTSMessage(responseType, attrRoute, requestMessage.dstId, requestMessage.srcId, requestMessage.rpcId, true, error,
-//                 jwt, data);
-//         }
-
 //LoginGetCert login the user and returns the MTSResult of type MtsLoginResponse
 func (connect *TCPConnect) LoginGetCert(mtsLoginMessage model.MTSMessage) (*model.MTSMessage, error) {
 	mtsLoginResponse, err := connect.GetCertificate(mtsLoginMessage, 1000000)
@@ -412,38 +415,57 @@ func (connect *TCPConnect) Send(mtsMessage model.MTSMessage, timeOutMs int) (*mo
 const (
 	//DELIMITER representing the end of message
 	DELIMITER byte = '\n'
+	//Offset is the length of byte array to indicate the msg length
+	Offset int = 4
 )
 
-//ReadFromConn reads from conn
-func ReadFromConn(conn net.Conn, delim byte) ([]byte, error) {
+// ReadFromConn reads from conn
+func (connect *TCPConnect) ReadFromConn(conn net.Conn, delim byte) (string, error) {
+	size := 500
+	buff := make([]byte, size)
 	reader := bufio.NewReader(conn)
-	var buffer bytes.Buffer
 
+	finalstring := ""
 	for {
-		ba, isPrefix, err := reader.ReadLine()
+		lenOfBuffer, err := io.ReadFull(reader, buff[:size])
 		if err != nil {
-			if err == io.EOF {
-				if buffer.Len() == 0 {
-					fmt.Println("conn closed....", err)
-					return nil, err
-				}
-
-				break
-			}
-
-			return nil, err
+			return "", err
 		}
 
-		buffer.Write(ba)
+		fmt.Println(lenOfBuffer)
 
-		fmt.Println(buffer.String())
-		if !isPrefix {
-			break
-		}
+		finalstring = finalstring + string(buff)
+		fmt.Println("finalstring before: ", finalstring)
+
+		finalstring = stringManipulation([]byte(finalstring))
+		fmt.Println("finalstring after: ", finalstring)
+	}
+}
+
+func stringManipulation(buff []byte) string {
+	var lengthOfResponseBa []byte
+	lengthOfResponseBa = buff[:4]
+
+	// convert This length Of Response To data length
+	responseLengthInt := convertByteToInt(lengthOfResponseBa)
+
+	fmt.Println("rquired response size: ", responseLengthInt)
+
+	if len(buff)+Offset < responseLengthInt {
+		return string(buff)
 	}
 
-	return buffer.Bytes(), nil
-	// return standardizeSpaces(buffer.String()), nil
+	dataSegment := buff[Offset : responseLengthInt+Offset]
+	fmt.Println("required segement : ", string(dataSegment))
+	// ProcessThisDataSegment()
+	remainingData := buff[responseLengthInt+Offset+1:]
+	return string(remainingData)
+}
+
+//ResetBuffer Resets the values in buffer
+func ResetBuffer(ba []byte, truncateInt int) []byte {
+	ba = ba[truncateInt:]
+	return ba
 }
 
 func standardizeSpaces(s string) string {
@@ -535,8 +557,13 @@ func PrepareData(msg []byte) []byte {
 	return data
 }
 
+func convertByteToInt(bytes []byte) int {
+	i := int32(binary.LittleEndian.Uint32(bytes))
+	return int(i)
+}
+
 func convertIntToByte(msgLength int32) []byte {
-	buff := make([]byte, 4)
+	buff := make([]byte, Offset)
 	binary.LittleEndian.PutUint32(buff, uint32(msgLength))
 	return buff
 }
@@ -550,27 +577,21 @@ func (connect *TCPConnect) Receieve() (*model.MTSMessage, error) {
 		}
 	}()
 
-	mtsResponseMessage := model.MTSMessage{}
+	var mtsResponseMessage model.MTSMessage
 
-	for {
-		fmt.Println("Reading the response")
+	responseChan := make(chan []byte)
+	erroChan := make(chan error)
+	// connect.ReadFromConn(connect.Conn, DELIMITER, responseChan, erroChan)
+	connect.ReadFromConn(connect.Conn, DELIMITER)
 
-		respContent, err := ReadFromConn(connect.Conn, DELIMITER)
-		if err != nil {
-			// connect.Conn.Close()
-			fmt.Println(err)
-			return nil, fmt.Errorf("Sender: Read error: %w", err)
-		}
+	var trimmedResponse []byte
 
-		trimmedResponse := string(respContent[4:])
-		fmt.Println(trimmedResponse)
+	for i := range responseChan {
+		trimmedResponse = i
+		fmt.Printf("Sender: Received content: %s\n", trimmedResponse)
 
-		trimmedResponse = `{"version":1,"attributeRoute":"A","route":9,"srcId":1,"dstId":2,"rpcId":1,"reply":false,"error":false,"jwt":null,"data":"AAAAAA=="}`
-
-		log.Printf("Sender: Received content: %s\n", trimmedResponse)
 		mtsResponseMessage := model.MTSMessage{}
-
-		err = json.Unmarshal([]byte(trimmedResponse), &mtsResponseMessage)
+		err := json.Unmarshal([]byte(trimmedResponse), &mtsResponseMessage)
 		if err != nil {
 			fmt.Println("unmarshal resposne error : ", err)
 			return nil, err
@@ -583,7 +604,34 @@ func (connect *TCPConnect) Receieve() (*model.MTSMessage, error) {
 		go connect.SendAcknowledgmentToServer(&mtsResponseMessage)
 	}
 
+	err := <-erroChan
+	if err != nil {
+		return nil, err
+	}
+
 	return &mtsResponseMessage, nil
+	// for {
+	// 	fmt.Println("Reading the response")
+	// 	fmt.Println(trimmedResponse)
+
+	// 	// trimmedResponse = `{"version":1,"attributeRoute":"A","route":9,"srcId":1,"dstId":2,"rpcId":1,"reply":false,"error":false,"jwt":null,"data":"AAAAAA=="}`
+
+	// 	log.Printf("Sender: Received content: %s\n", trimmedResponse)
+	// 	mtsResponseMessage := model.MTSMessage{}
+
+	// 	err := json.Unmarshal([]byte(trimmedResponse), &mtsResponseMessage)
+	// 	if err != nil {
+	// 		fmt.Println("unmarshal resposne error : ", err)
+	// 		return nil, err
+	// 	}
+
+	// 	if mtsResponseMessage.Route == 3 {
+	// 		break
+	// 	}
+
+	// 	go connect.SendAcknowledgmentToServer(&mtsResponseMessage)
+	// }
+
 }
 
 //CreateRequest creates a MTSMessage for user login
