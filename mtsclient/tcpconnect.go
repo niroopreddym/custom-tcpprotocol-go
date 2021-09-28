@@ -112,11 +112,6 @@ func (connect *TCPConnect) WithTLS(certificate []byte) {
 //ConnectAndLogin connects and login the user
 func (connect *TCPConnect) ConnectAndLogin() error {
 	isAuthenticated := connect.loginWithUsernameAndPassword()
-	// for {
-	// 	if isDone {
-	// 		break
-	// 	}
-	// }
 
 	if !isAuthenticated {
 		fmt.Println("UnAuthorized login creds")
@@ -211,6 +206,7 @@ func (connect *TCPConnect) loginWithUsernameAndPassword() bool {
 	err = connect.Login(mtsLoginMessage)
 	if err != nil {
 		fmt.Println(err)
+		return false
 	}
 
 	return true
@@ -286,7 +282,15 @@ func (connect *TCPConnect) Login(mtsLoginMessage model.MTSMessage) error {
 		return fmt.Errorf("Error getting the client cert")
 	}
 
-	connect.Receieve()
+	isDone, err := connect.Receieve()
+	if err != nil {
+		fmt.Println("error reading the data")
+		return err
+	}
+
+	if isDone {
+		return nil
+	}
 
 	return nil
 }
@@ -331,7 +335,7 @@ const (
 )
 
 // ReadFromConn reads from conn
-func (connect *TCPConnect) ReadFromConn(conn net.Conn) error {
+func (connect *TCPConnect) ReadFromConn(conn net.Conn) (bool, error) {
 	size := 100
 	buff := make([]byte, size)
 	reader := bufio.NewReader(conn)
@@ -341,7 +345,7 @@ func (connect *TCPConnect) ReadFromConn(conn net.Conn) error {
 		lenOfBuffer, err := io.ReadFull(reader, buff[:size])
 		if err != nil {
 			fmt.Println("error occured while reading form the connection")
-			return err
+			return false, err
 		}
 
 		fmt.Println(lenOfBuffer)
@@ -349,12 +353,17 @@ func (connect *TCPConnect) ReadFromConn(conn net.Conn) error {
 		finalstring = finalstring + string(buff)
 		fmt.Println("finalstring before: ", finalstring)
 
-		finalstring = connect.stringManipulation([]byte(finalstring))
+		finalstring, isDone = connect.stringManipulation([]byte(finalstring))
 		fmt.Println("finalstring after: ", finalstring)
+		if isDone {
+			fmt.Println("client cert : ", ClientCertificate)
+			return true, nil
+
+		}
 	}
 }
 
-func (connect *TCPConnect) stringManipulation(buff []byte) string {
+func (connect *TCPConnect) stringManipulation(buff []byte) (string, bool) {
 	var lengthOfResponseBa []byte
 	lengthOfResponseBa = buff[:4]
 
@@ -363,18 +372,22 @@ func (connect *TCPConnect) stringManipulation(buff []byte) string {
 
 	fmt.Println("rquired response size: ", responseLengthInt)
 
-	if len(buff)+Offset < responseLengthInt {
-		return string(buff)
+	if len(buff) < responseLengthInt+Offset {
+		return string(buff), false
 	}
 
 	dataSegment := buff[Offset : responseLengthInt+Offset]
 	fmt.Println("required segement : ", string(dataSegment))
 	// dataChan := make(chan string)
 	// dataChan <- string(dataSegment)
-	connect.ProcessDataSegment(string(dataSegment))
+	isDone := connect.ProcessDataSegment(string(dataSegment))
+	if isDone {
+		return "", true
+	}
+
 	remainingData := buff[responseLengthInt+Offset:]
 	fmt.Println("remaining segment : ", string(remainingData))
-	return string(remainingData)
+	return string(remainingData), false
 }
 
 var (
@@ -387,7 +400,7 @@ var (
 )
 
 //ProcessDataSegment process this segment asynchronously
-func (connect *TCPConnect) ProcessDataSegment(dataSegmentString string) {
+func (connect *TCPConnect) ProcessDataSegment(dataSegmentString string) (isDone bool) {
 	mtsResponseMessage := model.MTSMessage{}
 
 	// data := <-dataSegmentString
@@ -405,11 +418,20 @@ func (connect *TCPConnect) ProcessDataSegment(dataSegmentString string) {
 	if mtsResponseMessage.Route == enum.RMSPing {
 		connect.SendAcknowledgmentToServer(&mtsResponseMessage)
 	}
+
+	return
 }
 
 //ExtractCertData extracts the cert information out of the response
 func (connect *TCPConnect) ExtractCertData(mtsMessage model.MTSMessage) {
-	ClientCertificate = mtsMessage.Data
+	mtsResponse := model.MtsLoginResponse{}
+	responseData := mtsMessage.Data
+	err := json.Unmarshal(responseData, &mtsResponse)
+	if err != nil {
+		fmt.Println("error occuredwhen unmarshalling the response data")
+	}
+
+	ClientCertificate = mtsResponse.ClientCertificate
 	if mtsMessage.JWT != nil {
 		JWT = []byte(*mtsMessage.JWT)
 	} else {
@@ -524,7 +546,7 @@ func convertIntToByte(msgLength int32) []byte {
 }
 
 //Receieve receives the response
-func (connect *TCPConnect) Receieve() {
+func (connect *TCPConnect) Receieve() (bool, error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err := r.(error)
@@ -535,7 +557,8 @@ func (connect *TCPConnect) Receieve() {
 	// isDoneProcessing := make(chan bool)
 	// errorChan := make(chan error)
 
-	go connect.ReadFromConn(connect.Conn)
+	isDone, err := connect.ReadFromConn(connect.Conn)
+	return isDone, err
 }
 
 //CreateRequest creates a MTSMessage for user login
