@@ -227,6 +227,8 @@ func (connect *TCPConnect) SendAcknowledgmentToServer(mtsMessage *model.MTSMessa
 	case enum.OPL:
 		// TODO: Route OPL Messages to nodes
 		//break
+		log.Println("OPL response")
+		log.Println("received OPL response: ", mtsMessage)
 		return nil
 	case enum.RMSPing:
 		log.Print("Received RMS Ping request. Sending RMS Ping response.")
@@ -363,6 +365,8 @@ func (connect *TCPConnect) ReadFromConn(conn net.Conn) (bool, error) {
 	}
 }
 
+var firstTime bool = true
+
 func (connect *TCPConnect) stringManipulation(buff []byte) (string, bool) {
 	var lengthOfResponseBa []byte
 	lengthOfResponseBa = buff[:4]
@@ -381,7 +385,8 @@ func (connect *TCPConnect) stringManipulation(buff []byte) (string, bool) {
 	// dataChan := make(chan string)
 	// dataChan <- string(dataSegment)
 	isDone := connect.ProcessDataSegment(string(dataSegment))
-	if isDone {
+	if isDone && firstTime {
+		firstTime = false
 		return "", true
 	}
 
@@ -408,6 +413,16 @@ func (connect *TCPConnect) ProcessDataSegment(dataSegmentString string) (isDone 
 	err := json.Unmarshal([]byte(dataSegmentString), &mtsResponseMessage)
 	if err != nil {
 		fmt.Println("error occured while unmarshalling datasegment: ", err)
+	}
+
+	if mtsResponseMessage.Route == enum.OPL {
+		fmt.Println("OPL response: ")
+		connect.SendAcknowledgmentToServer(&mtsResponseMessage)
+	}
+
+	if mtsResponseMessage.Route == enum.OplCommands {
+		fmt.Println("OPL commands: ")
+		connect.SendAcknowledgmentToServer(&mtsResponseMessage)
 	}
 
 	if mtsResponseMessage.Route == enum.LoginResponse {
@@ -463,11 +478,15 @@ func WriteToConn(conn net.Conn, content []byte) (int, error) {
 func (connect *TCPConnect) SendTestOPLPayload(jwt *string) {
 	mtsOPLPayload := model.MtsOplPayload{
 		RoomID:          "101",
-		ProxyMACAddress: "",
+		ProxyMACAddress: nil,
 		Data:            make([]byte, 16),
 	}
 
-	strMtsOPLPayload, _ := json.Marshal(mtsOPLPayload)
+	strMtsOPLPayload, err := json.Marshal(mtsOPLPayload)
+	if err != nil {
+		fmt.Println("error occured in marshalling the OPLpayload data")
+		fmt.Println(err)
+	}
 
 	mtsLoginMessage := connect.CreateRequest(
 		enum.OPL,
@@ -475,7 +494,7 @@ func (connect *TCPConnect) SendTestOPLPayload(jwt *string) {
 		MTSRMSServer,
 		MTSServer,
 		false,
-		nil,
+		StrToPointer(string(JWT)),
 		strMtsOPLPayload,
 	)
 
@@ -497,7 +516,7 @@ func (connect *TCPConnect) send(msg []byte, timeOutMs int) error {
 
 	data := PrepareData(msg)
 	//sending message
-	fmt.Println("json:", string(msg))
+	fmt.Println("sender payload json:", string(msg))
 
 	fmt.Println("byte array : ", data)
 	num, err := WriteToConn(connect.Conn, data)
