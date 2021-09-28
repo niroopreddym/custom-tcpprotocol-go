@@ -7,5 +7,5 @@ type MtsOplPayload struct {
 	//ProxyMACAddress Proxy MAC Address
 	ProxyMACAddress *string `json:"ProxyMACAddress"`
 	//Data is OPL Message Data
-	Data []byte `json:"data"`
+	Data []byte `json:"Data"`
 }
