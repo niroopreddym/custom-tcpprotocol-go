@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/niroopreddym/custom-tcpprotocol-go/enum"
 	"github.com/niroopreddym/custom-tcpprotocol-go/model"
@@ -48,24 +49,24 @@ type TCPConnect struct {
 	Port             int
 	DefaultTimeOutMs int
 	Conn             net.Conn
+	ServerBootDone   chan bool
+	Wg               sync.WaitGroup
+	IsAuthenticated  chan bool
 }
 
 //NewTCPConnect ctor
 func NewTCPConnect(hostname string, port int, defaultTimeOutMs int) *TCPConnect {
-	connectionString := strings.Join([]string{hostname, strconv.Itoa(port)}, ":")
-	conn, err := GetConnection(connectionString)
-	if err != nil {
-		os.Exit(1)
-	}
-
 	return &TCPConnect{
 		MTSClient: MTSClient{
-			Connected: true,
+			Connected: false,
 		},
 		Hostname:         hostname,
 		Port:             port,
 		DefaultTimeOutMs: defaultTimeOutMs,
-		Conn:             conn,
+		Conn:             &tls.Conn{},
+		ServerBootDone:   make(chan bool),
+		Wg:               sync.WaitGroup{},
+		IsAuthenticated:  make(chan bool),
 	}
 }
 
@@ -90,8 +91,6 @@ func GetConnection(connectionString string) (net.Conn, error) {
 
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
-		// RootCAs:            x509.NewCertPool(),
-		// Renegotiation:      tls.RenegotiateFreelyAsClient,
 	}
 
 	conn, err := tls.Dial("tcp", connectionString, tlsConfig)
@@ -109,36 +108,42 @@ func (connect *TCPConnect) WithTLS(certificate []byte) {
 	connect.MTSClient.ClientCertificate = certificate
 }
 
-//ConnectAndLogin connects and login the user
-func (connect *TCPConnect) ConnectAndLogin() error {
-	isAuthenticated := connect.loginWithUsernameAndPassword()
+//TCPServer returns the TCP server connection
+func (connect *TCPConnect) TCPServer(ClientCertificate []byte, errorChan chan error, authenticationCall func(errorChan chan error)) {
+	connectionString := strings.Join([]string{connect.Hostname, strconv.Itoa(connect.Port)}, ":")
+	conn, err := GetConnection(connectionString)
+	if err != nil {
+		fmt.Println("error while instantiating the connection", err)
+		os.Exit(1)
+	}
 
-	if !isAuthenticated {
+	connect.MTSClient.Connected = true
+	connect.Conn = conn
+
+	authenticationCall(errorChan)
+}
+
+//ConnectAndLogin connects and login the user
+func (connect *TCPConnect) ConnectAndLogin(isAuthenticated chan bool, errorChan chan error) {
+	connect.TCPServer(nil, errorChan, connect.loginWithUsernameAndPassword)
+
+	if !<-isAuthenticated {
 		fmt.Println("UnAuthorized login creds")
-		return fmt.Errorf("UnAuthorized login creds")
+		go func() { errorChan <- fmt.Errorf("UnAuthorized login creds") }()
 	}
 
 	connect.Conn.Close()
 
 	connect.WithTLS(ClientCertificate)
+	connect.TCPServer(nil, errorChan, connect.loginWithCertificate)
 
-	connectionString := strings.Join([]string{connect.Hostname, strconv.Itoa(connect.Port)}, ":")
-	conn, err := GetConnection(connectionString)
-	if err != nil {
-		os.Exit(1)
+	if <-isAuthenticated {
+		fmt.Println("successfully booted up the server with the client certificate")
+		go func() { connect.ServerBootDone <- true }()
 	}
-
-	connect.Conn = conn
-
-	isAuthenticatedWithCert := connect.loginWithCertificate()
-	if !isAuthenticatedWithCert {
-		return fmt.Errorf("UnAuthorized client cert")
-	}
-
-	return nil
 }
 
-func (connect *TCPConnect) loginWithCertificate() bool {
+func (connect *TCPConnect) loginWithCertificate(errorChan chan error) {
 	kAppRMS := []byte{79, 157, 102, 210, 83, 34, 156, 117, 223, 190, 187, 27, 28, 63, 94, 214, 4, 98, 123, 98, 65, 20, 143, 60, 50, 62, 162, 115, 7, 46, 119, 8}
 
 	mtsLogin := MtsLogin{
@@ -152,7 +157,8 @@ func (connect *TCPConnect) loginWithCertificate() bool {
 	mtsLoginByteData, err := json.Marshal(mtsLogin)
 	if err != nil {
 		fmt.Println("error in marshalling the mtsLogin Data: ", err)
-		return false
+		go func() { errorChan <- err }()
+
 	}
 
 	mtsLoginMessage := connect.CreateRequest(
@@ -165,17 +171,10 @@ func (connect *TCPConnect) loginWithCertificate() bool {
 		mtsLoginByteData,
 	)
 
-	isDone = false
-	err = connect.Login(mtsLoginMessage)
-	if err != nil {
-		return false
-	}
-
-	return true
+	connect.Login(mtsLoginMessage, connect.IsAuthenticated, errorChan)
 }
 
-func (connect *TCPConnect) loginWithUsernameAndPassword() bool {
-
+func (connect *TCPConnect) loginWithUsernameAndPassword(errorChan chan error) {
 	kAppRMS := []byte{79, 157, 102, 210, 83, 34, 156, 117, 223, 190, 187, 27, 28, 63, 94, 214, 4, 98, 123, 98, 65, 20, 143, 60, 50, 62, 162, 115, 7, 46, 119, 8}
 	username := "mtstest"
 	password := "Test123"
@@ -190,7 +189,8 @@ func (connect *TCPConnect) loginWithUsernameAndPassword() bool {
 	mtsLoginByteData, err := json.Marshal(mtsLogin)
 	if err != nil {
 		fmt.Println("error in marshalling the mtsLogin Data: ", err)
-		return false
+		go func() { errorChan <- err }()
+
 	}
 
 	mtsLoginMessage := connect.CreateRequest(
@@ -203,26 +203,11 @@ func (connect *TCPConnect) loginWithUsernameAndPassword() bool {
 		mtsLoginByteData,
 	)
 
-	err = connect.Login(mtsLoginMessage)
-	if err != nil {
-		fmt.Println(err)
-		return false
-	}
-
-	return true
+	connect.Login(mtsLoginMessage, connect.IsAuthenticated, errorChan)
 }
 
 //SendAcknowledgmentToServer sends the ack back to the server
 func (connect *TCPConnect) SendAcknowledgmentToServer(mtsMessage *model.MTSMessage) error {
-	// var value string
-	// if mtsMessage.jwt == "jwt" {
-	// 	value = mtsMessage.jwt
-	// } else {
-	// 	mtsMessage.jwt = nil
-	// }
-
-	// var JWT = mtsMessage.jwt == null || mtsMessage.jwt == JWT || value
-	// JWT := nil
 	switch mtsMessage.Route {
 	case enum.OPL:
 		// TODO: Route OPL Messages to nodes
@@ -276,25 +261,24 @@ func (connect *TCPConnect) CreateResponse(requestMessage *model.MTSMessage, resp
 }
 
 //Login login the user and returns the MtsLoginResponse
-func (connect *TCPConnect) Login(mtsLoginMessage model.MTSMessage) error {
+func (connect *TCPConnect) Login(mtsLoginMessage model.MTSMessage, certificateReceived chan bool, errorChan chan error) {
 	err := connect.SendLoginPayload(mtsLoginMessage, 1000000)
 
 	if err != nil {
 		fmt.Println("Error getting the client cert", err)
-		return fmt.Errorf("Error getting the client cert")
+		go func() { errorChan <- err }()
+
 	}
 
 	isDone, err := connect.Receieve()
 	if err != nil {
 		fmt.Println("error reading the data")
-		return err
+		go func() { errorChan <- err }()
 	}
 
 	if isDone {
-		return nil
+		go func() { certificateReceived <- true }()
 	}
-
-	return nil
 }
 
 //SendLoginPayload sends the data to MTS Client and gets the appropriate response
@@ -355,19 +339,12 @@ func (connect *TCPConnect) ReadFromConn(conn net.Conn) (bool, error) {
 		finalstring = finalstring + string(buff)
 		fmt.Println("finalstring before: ", finalstring)
 
-		finalstring, isDone = connect.stringManipulation([]byte(finalstring))
+		finalstring = connect.stringManipulation([]byte(finalstring))
 		fmt.Println("finalstring after: ", finalstring)
-		if isDone {
-			fmt.Println("client cert : ", ClientCertificate)
-			return true, nil
-
-		}
 	}
 }
 
-var firstTime bool = true
-
-func (connect *TCPConnect) stringManipulation(buff []byte) (string, bool) {
+func (connect *TCPConnect) stringManipulation(buff []byte) string {
 	var lengthOfResponseBa []byte
 	lengthOfResponseBa = buff[:4]
 
@@ -377,22 +354,18 @@ func (connect *TCPConnect) stringManipulation(buff []byte) (string, bool) {
 	fmt.Println("rquired response size: ", responseLengthInt)
 
 	if len(buff) < responseLengthInt+Offset {
-		return string(buff), false
+		return string(buff)
 	}
 
 	dataSegment := buff[Offset : responseLengthInt+Offset]
 	fmt.Println("required segement : ", string(dataSegment))
 	// dataChan := make(chan string)
 	// dataChan <- string(dataSegment)
-	isDone := connect.ProcessDataSegment(string(dataSegment))
-	if isDone && firstTime {
-		firstTime = false
-		return "", true
-	}
+	connect.ProcessDataSegment(string(dataSegment))
 
 	remainingData := buff[responseLengthInt+Offset:]
 	fmt.Println("remaining segment : ", string(remainingData))
-	return string(remainingData), false
+	return string(remainingData)
 }
 
 var (
@@ -400,12 +373,10 @@ var (
 	ClientCertificate []byte
 	//JWT has the JWT data
 	JWT []byte
-
-	isDone = false
 )
 
 //ProcessDataSegment process this segment asynchronously
-func (connect *TCPConnect) ProcessDataSegment(dataSegmentString string) (isDone bool) {
+func (connect *TCPConnect) ProcessDataSegment(dataSegmentString string) {
 	mtsResponseMessage := model.MTSMessage{}
 
 	// data := <-dataSegmentString
@@ -415,35 +386,29 @@ func (connect *TCPConnect) ProcessDataSegment(dataSegmentString string) (isDone 
 		fmt.Println("error occured while unmarshalling datasegment: ", err)
 	}
 
-	if mtsResponseMessage.Route == enum.OPL {
+	switch mtsResponseMessage.Route {
+	case enum.OPL:
 		fmt.Println("OPL response: ")
 		connect.SendAcknowledgmentToServer(&mtsResponseMessage)
-	}
-
-	if mtsResponseMessage.Route == enum.OplCommands {
-		fmt.Println("OPL commands: ")
+	case enum.LoginResponse:
+		connect.ExtractCertData(mtsResponseMessage, connect.IsAuthenticated)
+	case enum.RMSPing:
 		connect.SendAcknowledgmentToServer(&mtsResponseMessage)
 	}
-
-	if mtsResponseMessage.Route == enum.LoginResponse {
-		connect.ExtractCertData(mtsResponseMessage)
-		isDone = true
-	}
-
-	if mtsResponseMessage.Route == enum.RMSPing {
-		connect.SendAcknowledgmentToServer(&mtsResponseMessage)
-	}
-
-	return
 }
 
 //ExtractCertData extracts the cert information out of the response
-func (connect *TCPConnect) ExtractCertData(mtsMessage model.MTSMessage) {
+func (connect *TCPConnect) ExtractCertData(mtsMessage model.MTSMessage, isAuthenticated chan bool) {
 	mtsResponse := model.MtsLoginResponse{}
 	responseData := mtsMessage.Data
 	err := json.Unmarshal(responseData, &mtsResponse)
 	if err != nil {
 		fmt.Println("error occuredwhen unmarshalling the response data")
+		go func() { isAuthenticated <- false }()
+	}
+
+	if mtsMessage.IsError == true {
+		go func() { isAuthenticated <- false }()
 	}
 
 	ClientCertificate = mtsResponse.ClientCertificate
@@ -452,6 +417,8 @@ func (connect *TCPConnect) ExtractCertData(mtsMessage model.MTSMessage) {
 	} else {
 		JWT = nil
 	}
+
+	go func() { isAuthenticated <- true }()
 }
 
 //ResetBuffer Resets the values in buffer
