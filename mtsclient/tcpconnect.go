@@ -25,10 +25,11 @@ const (
 	MTSRMSServer = 2
 	//MTSProvisioner Node ID constant for MTS Provisioner
 	MTSProvisioner = 3
+	//Offset is the length of byte array to indicate the msg length
+	Offset = helper.Offset
+	//WriteBufferSize is the size of the buffer that writes to the server
+	WriteBufferSize = 1 << 12
 )
-
-//Offset is the length of byte array to indicate the msg length
-const Offset int = helper.Offset
 
 var (
 	//ClientCertificate has the client cert
@@ -39,7 +40,7 @@ var (
 	KAppRMS = []byte{79, 157, 102, 210, 83, 34, 156, 117, 223, 190, 187, 27, 28, 63, 94, 214, 4, 98, 123, 98, 65, 20, 143, 60, 50, 62, 162, 115, 7, 46, 119, 8}
 )
 
-//TCPConnect logins
+//TCPConnect is the struct that implements the socket communication functionality
 type TCPConnect struct {
 	MTSClient        model.MTSClient
 	Hostname         string
@@ -53,7 +54,7 @@ type TCPConnect struct {
 	Password         *string
 }
 
-//NewTCPConnect ctor
+//NewTCPConnect is the ctor that instantiates the struct
 func NewTCPConnect(hostname string, port int, defaultTimeOutMs int) *TCPConnect {
 	return &TCPConnect{
 		MTSClient: model.MTSClient{
@@ -168,28 +169,6 @@ func (connect *TCPConnect) loginWithUsernameAndPassword(errorChan chan error) {
 	connect.Login(mtsLoginMessage, connect.IsAuthenticated, errorChan)
 }
 
-//SendAcknowledgmentToServer sends the ack back to the server
-func (connect *TCPConnect) SendAcknowledgmentToServer(mtsMessage *model.MTSMessage) error {
-	switch mtsMessage.Route {
-	case enum.OPL:
-		// TODO: Route OPL Messages to nodes
-		//break
-		log.Println("OPL response")
-		strOplResponse, _ := json.Marshal(mtsMessage)
-		log.Println("received OPL response: ", strOplResponse)
-		return nil
-	case enum.RMSPing:
-		log.Print("Received RMS Ping request. Sending RMS Ping response.")
-		fmt.Println("JWT Token is : ", mtsMessage.JWT)
-		msgResponse := helper.CreateResponse(mtsMessage, enum.RMSPingResponse, nil, false, mtsMessage.JWT, make([]byte, 4))
-		return connect.Send(msgResponse)
-	default:
-		log.Print("Unknown message : ", mtsMessage.Route)
-		var responseMsg = helper.CreateErrorResponse(enum.InvalidRequest, enum.MtsErrorID.String(enum.InvalidRequest), mtsMessage, mtsMessage.Route, nil, mtsMessage.JWT)
-		return connect.Send(responseMsg)
-	}
-}
-
 //Login login the user and returns the MtsLoginResponse
 func (connect *TCPConnect) Login(mtsLoginMessage model.MTSMessage, certificateReceived chan bool, errorChan chan error) {
 	err := connect.SendLoginPayload(mtsLoginMessage, 1000000)
@@ -211,12 +190,34 @@ func (connect *TCPConnect) Login(mtsLoginMessage model.MTSMessage, certificateRe
 	}
 }
 
-//SendLoginPayload sends the data to MTS Client and gets the appropriate response
-func (connect *TCPConnect) SendLoginPayload(mtsMessage model.MTSMessage, timeOutMs int) error {
+//SendAcknowledgmentToServer sends the ack back to the server
+func (connect *TCPConnect) SendAcknowledgmentToServer(mtsMessage *model.MTSMessage) error {
+	switch mtsMessage.Route {
+	case enum.OPL:
+		// TODO: Route OPL Messages to nodes
+		//break
+		log.Println("OPL response")
+		strOplResponse, _ := json.Marshal(mtsMessage)
+		log.Println("received OPL response: ", strOplResponse)
+		return nil
+	case enum.RMSPing:
+		log.Print("Received RMS Ping request. Sending RMS Ping response.")
+		fmt.Println("JWT Token is : ", mtsMessage.JWT)
+		msgResponse := helper.CreateResponse(mtsMessage, enum.RMSPingResponse, nil, false, mtsMessage.JWT, make([]byte, 4))
+		return connect.SendDataToServer(msgResponse)
+	default:
+		log.Print("Unknown message : ", mtsMessage.Route)
+		var responseMsg = helper.CreateErrorResponse(enum.InvalidRequest, enum.MtsErrorID.String(enum.InvalidRequest), mtsMessage, mtsMessage.Route, nil, mtsMessage.JWT)
+		return connect.SendDataToServer(responseMsg)
+	}
+}
+
+//SendDataToServer sends the data to MTS Server
+func (connect *TCPConnect) SendDataToServer(mtsMessage model.MTSMessage) error {
+
 	mtsMessageByteData, err := json.Marshal(mtsMessage)
 	if err != nil {
 		fmt.Println("error in marshalling the MTSMessage Data: ", err)
-		return err
 	}
 
 	err = connect.send(mtsMessageByteData)
@@ -228,21 +229,36 @@ func (connect *TCPConnect) SendLoginPayload(mtsMessage model.MTSMessage, timeOut
 	return nil
 }
 
-//Send sends the data to MTS Client
-func (connect *TCPConnect) Send(mtsMessage model.MTSMessage) error {
+func (connect *TCPConnect) send(msg []byte) error {
+	defer func() {
+		if r := recover(); r != nil {
+			err := r.(error)
+			fmt.Println(err)
+		}
+	}()
 
-	mtsMessageByteData, err := json.Marshal(mtsMessage)
+	data := helper.PrepareData(msg)
+	//sending message
+	fmt.Println("sender payload json:", string(msg))
+
+	fmt.Println("byte array : ", data)
+	num, err := connect.WriteToConn(data)
 	if err != nil {
-		fmt.Println("error in marshalling the MTSMessage Data: ", err)
+		return fmt.Errorf("Sender: Write Error: %w", err)
 	}
 
-	err = connect.send(mtsMessageByteData)
-	if err != nil {
-		fmt.Println(err)
-		return err
-	}
-
+	log.Printf("Sender: Wrote %d byte(s)\n", num)
 	return nil
+}
+
+//WriteToConn writes to connection
+func (connect *TCPConnect) WriteToConn(content []byte) (int, error) {
+	writer := bufio.NewWriterSize(connect.Conn, WriteBufferSize)
+	number, err := writer.Write(content)
+	if err == nil {
+		err = writer.Flush()
+	}
+	return number, err
 }
 
 // ReadFromConn reads from conn
@@ -332,14 +348,34 @@ func (connect *TCPConnect) ExtractCertData(mtsMessage model.MTSMessage) {
 	go func() { connect.IsAuthenticated <- true }()
 }
 
-//WriteToConn writes to connection
-func (connect *TCPConnect) WriteToConn(conn net.Conn, content []byte) (int, error) {
-	writer := bufio.NewWriterSize(conn, 1<<12)
-	number, err := writer.Write(content)
-	if err == nil {
-		err = writer.Flush()
+//Receieve receives the response
+func (connect *TCPConnect) Receieve() (bool, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err := r.(error)
+			fmt.Println(err)
+		}
+	}()
+
+	isDone, err := connect.ReadFromConn()
+	return isDone, err
+}
+
+//SendLoginPayload sends the data to MTS Client and gets the appropriate response
+func (connect *TCPConnect) SendLoginPayload(mtsMessage model.MTSMessage, timeOutMs int) error {
+	mtsMessageByteData, err := json.Marshal(mtsMessage)
+	if err != nil {
+		fmt.Println("error in marshalling the MTSMessage Data: ", err)
+		return err
 	}
-	return number, err
+
+	err = connect.send(mtsMessageByteData)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	return nil
 }
 
 //SendTestOPLPayload sends the test payload to the server
@@ -366,45 +402,5 @@ func (connect *TCPConnect) SendTestOPLPayload(jwt *string) {
 		strMtsOPLPayload,
 	)
 
-	connect.SendOPLPayload(mtsLoginMessage)
-}
-
-//SendOPLPayload Send an OPL Message
-func (connect *TCPConnect) SendOPLPayload(mtsOPLMessage model.MTSMessage) {
-	connect.Send(mtsOPLMessage)
-}
-
-func (connect *TCPConnect) send(msg []byte) error {
-	defer func() {
-		if r := recover(); r != nil {
-			err := r.(error)
-			fmt.Println(err)
-		}
-	}()
-
-	data := helper.PrepareData(msg)
-	//sending message
-	fmt.Println("sender payload json:", string(msg))
-
-	fmt.Println("byte array : ", data)
-	num, err := connect.WriteToConn(connect.Conn, data)
-	if err != nil {
-		return fmt.Errorf("Sender: Write Error: %w", err)
-	}
-
-	log.Printf("Sender: Wrote %d byte(s)\n", num)
-	return nil
-}
-
-//Receieve receives the response
-func (connect *TCPConnect) Receieve() (bool, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err := r.(error)
-			fmt.Println(err)
-		}
-	}()
-
-	isDone, err := connect.ReadFromConn()
-	return isDone, err
+	connect.SendDataToServer(mtsLoginMessage)
 }
