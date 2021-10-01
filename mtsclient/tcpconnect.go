@@ -48,6 +48,8 @@ type TCPConnect struct {
 	Port             int
 	DefaultTimeOutMs int
 	Conn             net.Conn
+	RequestMap       map[int]model.MTSMessage
+	ResponseMap      map[int]model.MTSMessage
 }
 
 //NewTCPConnect ctor
@@ -66,6 +68,8 @@ func NewTCPConnect(hostname string, port int, defaultTimeOutMs int) *TCPConnect 
 		Port:             port,
 		DefaultTimeOutMs: defaultTimeOutMs,
 		Conn:             conn,
+		RequestMap:       make(map[int]model.MTSMessage),
+		ResponseMap:      make(map[int]model.MTSMessage),
 	}
 }
 
@@ -90,8 +94,6 @@ func GetConnection(connectionString string) (net.Conn, error) {
 
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
-		// RootCAs:            x509.NewCertPool(),
-		// Renegotiation:      tls.RenegotiateFreelyAsClient,
 	}
 
 	conn, err := tls.Dial("tcp", connectionString, tlsConfig)
@@ -229,16 +231,28 @@ func (connect *TCPConnect) SendAcknowledgmentToServer(mtsMessage *model.MTSMessa
 		//break
 		log.Println("OPL response")
 		log.Println("received OPL response: ", mtsMessage)
+		// connect.logicToVerifyReqResponsePair(mtsMessage)
 		return nil
 	case enum.RMSPing:
 		log.Print("Received RMS Ping request. Sending RMS Ping response.")
 		fmt.Println("JWT Token is : ", mtsMessage.JWT)
+		connect.RequestMap[mtsMessage.RPCID] = *mtsMessage
 		msgResponse := connect.CreateResponse(mtsMessage, enum.RMSPingResponse, nil, false, mtsMessage.JWT, make([]byte, 4))
+		connect.logicToVerifyReqResponsePair(msgResponse)
 		return connect.Send(msgResponse, 1000000)
 	default:
 		log.Print("Unknown message : ", mtsMessage.Route)
 		var responseMsg = connect.CreateErrorResponse(enum.InvalidRequest, enum.MtsErrorID.String(enum.InvalidRequest), mtsMessage, mtsMessage.Route, nil, mtsMessage.JWT)
 		return connect.Send(responseMsg, 1000000)
+	}
+}
+
+func (connect *TCPConnect) logicToVerifyReqResponsePair(mtsMessage model.MTSMessage) {
+	if val, isExists := connect.RequestMap[mtsMessage.RPCID]; isExists {
+		strVal, _ := json.Marshal(val)
+		fmt.Println("request server payload: ", string(strVal))
+		strMtsMessage, _ := json.Marshal(mtsMessage)
+		fmt.Println("response to server payload: ", string(strMtsMessage))
 	}
 }
 
@@ -344,19 +358,15 @@ func (connect *TCPConnect) ReadFromConn(conn net.Conn) (bool, error) {
 
 	finalstring := ""
 	for {
-		lenOfBuffer, err := io.ReadFull(reader, buff[:size])
+		_, err := io.ReadFull(reader, buff[:size])
 		if err != nil {
 			fmt.Println("error occured while reading form the connection")
 			return false, err
 		}
 
-		fmt.Println(lenOfBuffer)
-
 		finalstring = finalstring + string(buff)
-		fmt.Println("finalstring before: ", finalstring)
 
 		finalstring, isDone = connect.stringManipulation([]byte(finalstring))
-		fmt.Println("finalstring after: ", finalstring)
 		if isDone {
 			fmt.Println("client cert : ", ClientCertificate)
 			return true, nil
@@ -374,16 +384,11 @@ func (connect *TCPConnect) stringManipulation(buff []byte) (string, bool) {
 	// convert This length Of Response To data length
 	responseLengthInt := convertByteToInt(lengthOfResponseBa)
 
-	fmt.Println("rquired response size: ", responseLengthInt)
-
 	if len(buff) < responseLengthInt+Offset {
 		return string(buff), false
 	}
 
 	dataSegment := buff[Offset : responseLengthInt+Offset]
-	fmt.Println("required segement : ", string(dataSegment))
-	// dataChan := make(chan string)
-	// dataChan <- string(dataSegment)
 	isDone := connect.ProcessDataSegment(string(dataSegment))
 	if isDone && firstTime {
 		firstTime = false
@@ -391,7 +396,6 @@ func (connect *TCPConnect) stringManipulation(buff []byte) (string, bool) {
 	}
 
 	remainingData := buff[responseLengthInt+Offset:]
-	fmt.Println("remaining segment : ", string(remainingData))
 	return string(remainingData), false
 }
 
@@ -497,6 +501,8 @@ func (connect *TCPConnect) SendTestOPLPayload(jwt *string) {
 		StrToPointer(string(JWT)),
 		strMtsOPLPayload,
 	)
+
+	// connect.RequestMap[mtsLoginMessage.RPCID] = mtsLoginMessage
 
 	connect.SendOPLPayload(mtsLoginMessage)
 }
