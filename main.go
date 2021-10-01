@@ -22,7 +22,6 @@ func main() {
 	}()
 
 	tcpConnect := mtsclient.NewTCPConnect("127.0.0.1", 10001, 10000)
-	tcpConnect.Init()
 
 	defer tcpConnect.Conn.Close()
 	//do all operations on top of TLS
@@ -33,10 +32,10 @@ func main() {
 
 	tcpConnect.Wg.Add(1)
 	tcpConnect.ConnectAndLogin(isAuthenticatedChan, errorChan)
-	err := <-errorChan
-	if err != nil {
-		fmt.Println(err)
-	}
+	// err := <-errorChan
+	// if err != nil {
+	// 	fmt.Println(err)
+	// }
 
 	if <-tcpConnect.ServerBootDone {
 		tcpConnect.Wg.Add(1)
@@ -48,7 +47,6 @@ func main() {
 }
 
 func sendOPLTestMessages(tcpConnect *mtsclient.TCPConnect, wg *sync.WaitGroup) {
-	time.Sleep(10 * time.Second)
 
 	testEventsMap := map[int]enum.TestEvent{}
 	// Create some test events
@@ -62,15 +60,6 @@ func sendOPLTestMessages(tcpConnect *mtsclient.TCPConnect, wg *sync.WaitGroup) {
 
 	exitTest := false
 	for !exitTest {
-		for !tcpConnect.MTSClient.Connected {
-			// tcpConnect.ConnectAndLogin()
-			if !tcpConnect.MTSClient.Connected {
-				log.Println("Trying to connect")
-				time.Sleep(3 * time.Second)
-			} else {
-				log.Println("Connected")
-			}
-		}
 
 		// Send messages within this program loop
 		if event, ok := testEventsMap[TestElapsedSeconds]; ok {

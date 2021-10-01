@@ -39,8 +39,8 @@ const (
 	MaxUint = 1<<UintSize - 1 // 1<<32 - 1 or 1<<64 - 1
 )
 
-//MaxMessageLength max chunk size that can be written to the server
-const MaxMessageLength = 1 << 22 //  1 x 2 ^ 22 = 4 MB
+//MaxMessageLength is the length limitation for the message to be sent to the server
+const MaxMessageLength = 1 << 22 // 2^2 * 2^10 * 2^10 = 4 MiB
 
 //TCPConnect logins
 type TCPConnect struct {
@@ -71,14 +71,6 @@ func NewTCPConnect(hostname string, port int, defaultTimeOutMs int) *TCPConnect 
 }
 
 var _dataBuffer []byte
-
-//Init inits few variables
-func (connect *TCPConnect) Init() {
-	connect.MTSClient.ReadBuffer = make([]byte, 32*1024) // TODO, this might be too small! (try to keep things to 16K)
-	_dataBuffer = make([]byte, 4)
-	connect.MTSClient.BufferLen = 0
-	connect.MTSClient.ExpectedLen = 0
-}
 
 //GetConnection instantiates and gets the connection
 func GetConnection(connectionString string) (net.Conn, error) {
@@ -125,19 +117,19 @@ func (connect *TCPConnect) TCPServer(ClientCertificate []byte, errorChan chan er
 
 //ConnectAndLogin connects and login the user
 func (connect *TCPConnect) ConnectAndLogin(isAuthenticated chan bool, errorChan chan error) {
-	connect.TCPServer(nil, errorChan, connect.loginWithUsernameAndPassword)
+	go connect.TCPServer(nil, errorChan, connect.loginWithUsernameAndPassword)
 
-	if !<-isAuthenticated {
+	if <-connect.IsAuthenticated {
+		connect.Conn.Close()
+	} else {
 		fmt.Println("UnAuthorized login creds")
 		go func() { errorChan <- fmt.Errorf("UnAuthorized login creds") }()
 	}
 
-	connect.Conn.Close()
-
 	connect.WithTLS(ClientCertificate)
-	connect.TCPServer(nil, errorChan, connect.loginWithCertificate)
+	go connect.TCPServer(nil, errorChan, connect.loginWithCertificate)
 
-	if <-isAuthenticated {
+	if <-connect.IsAuthenticated {
 		fmt.Println("successfully booted up the server with the client certificate")
 		go func() { connect.ServerBootDone <- true }()
 	}
@@ -213,7 +205,8 @@ func (connect *TCPConnect) SendAcknowledgmentToServer(mtsMessage *model.MTSMessa
 		// TODO: Route OPL Messages to nodes
 		//break
 		log.Println("OPL response")
-		log.Println("received OPL response: ", mtsMessage)
+		strOplResponse, _ := json.Marshal(mtsMessage)
+		log.Println("received OPL response: ", strOplResponse)
 		return nil
 	case enum.RMSPing:
 		log.Print("Received RMS Ping request. Sending RMS Ping response.")
@@ -328,19 +321,14 @@ func (connect *TCPConnect) ReadFromConn(conn net.Conn) (bool, error) {
 
 	finalstring := ""
 	for {
-		lenOfBuffer, err := io.ReadFull(reader, buff[:size])
+		_, err := io.ReadFull(reader, buff[:size])
 		if err != nil {
 			fmt.Println("error occured while reading form the connection")
 			return false, err
 		}
 
-		fmt.Println(lenOfBuffer)
-
 		finalstring = finalstring + string(buff)
-		fmt.Println("finalstring before: ", finalstring)
-
 		finalstring = connect.stringManipulation([]byte(finalstring))
-		fmt.Println("finalstring after: ", finalstring)
 	}
 }
 
@@ -359,8 +347,6 @@ func (connect *TCPConnect) stringManipulation(buff []byte) string {
 
 	dataSegment := buff[Offset : responseLengthInt+Offset]
 	fmt.Println("required segement : ", string(dataSegment))
-	// dataChan := make(chan string)
-	// dataChan <- string(dataSegment)
 	connect.ProcessDataSegment(string(dataSegment))
 
 	remainingData := buff[responseLengthInt+Offset:]
@@ -391,24 +377,24 @@ func (connect *TCPConnect) ProcessDataSegment(dataSegmentString string) {
 		fmt.Println("OPL response: ")
 		connect.SendAcknowledgmentToServer(&mtsResponseMessage)
 	case enum.LoginResponse:
-		connect.ExtractCertData(mtsResponseMessage, connect.IsAuthenticated)
+		connect.ExtractCertData(mtsResponseMessage)
 	case enum.RMSPing:
 		connect.SendAcknowledgmentToServer(&mtsResponseMessage)
 	}
 }
 
 //ExtractCertData extracts the cert information out of the response
-func (connect *TCPConnect) ExtractCertData(mtsMessage model.MTSMessage, isAuthenticated chan bool) {
+func (connect *TCPConnect) ExtractCertData(mtsMessage model.MTSMessage) {
 	mtsResponse := model.MtsLoginResponse{}
 	responseData := mtsMessage.Data
 	err := json.Unmarshal(responseData, &mtsResponse)
 	if err != nil {
 		fmt.Println("error occuredwhen unmarshalling the response data")
-		go func() { isAuthenticated <- false }()
+		go func() { connect.IsAuthenticated <- false }()
 	}
 
 	if mtsMessage.IsError == true {
-		go func() { isAuthenticated <- false }()
+		go func() { connect.IsAuthenticated <- false }()
 	}
 
 	ClientCertificate = mtsResponse.ClientCertificate
@@ -418,17 +404,7 @@ func (connect *TCPConnect) ExtractCertData(mtsMessage model.MTSMessage, isAuthen
 		JWT = nil
 	}
 
-	go func() { isAuthenticated <- true }()
-}
-
-//ResetBuffer Resets the values in buffer
-func ResetBuffer(ba []byte, truncateInt int) []byte {
-	ba = ba[truncateInt:]
-	return ba
-}
-
-func standardizeSpaces(s string) string {
-	return strings.Join(strings.Fields(s), " ")
+	go func() { connect.IsAuthenticated <- true }()
 }
 
 //WriteToConn writes to connection
@@ -495,17 +471,14 @@ func (connect *TCPConnect) send(msg []byte, timeOutMs int) error {
 	return nil
 }
 
-//MAXMESSAGELENGTH is the length limitation for the message to be sent to the server
-const MAXMESSAGELENGTH = 1 << 22 // 2^2 * 2^10 * 2^10 = 4 MiB
-
 //PrepareData prepares the data to be sent
 func PrepareData(msg []byte) []byte {
 	// Expected length should be uint (TA8319)
 	msgLength := len(msg)
 	log.Println("Send message length ", msgLength)
 
-	if msgLength > MAXMESSAGELENGTH {
-		var errorMsg = fmt.Sprintf("Messages longer than %d are not supported.", MAXMESSAGELENGTH)
+	if msgLength > MaxMessageLength {
+		var errorMsg = fmt.Sprintf("Messages longer than %d are not supported.", MaxMessageLength)
 		log.Println(errorMsg)
 		log.Panic("msglength exception")
 	}
@@ -539,9 +512,6 @@ func (connect *TCPConnect) Receieve() (bool, error) {
 			fmt.Println(err)
 		}
 	}()
-
-	// isDoneProcessing := make(chan bool)
-	// errorChan := make(chan error)
 
 	isDone, err := connect.ReadFromConn(connect.Conn)
 	return isDone, err
