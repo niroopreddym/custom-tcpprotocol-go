@@ -7,11 +7,16 @@ import (
 	"time"
 
 	"github.com/niroopreddym/custom-tcpprotocol-go/enum"
+	helper "github.com/niroopreddym/custom-tcpprotocol-go/helpers"
 	"github.com/niroopreddym/custom-tcpprotocol-go/mtsclient"
 )
 
 //TestElapsedSeconds intial time to trigger the fan out test events
 var TestElapsedSeconds = 1
+
+//get these values securely from the env
+const username = "mtstest"
+const password = "Test123"
 
 func main() {
 	defer func() {
@@ -22,6 +27,8 @@ func main() {
 	}()
 
 	tcpConnect := mtsclient.NewTCPConnect("127.0.0.1", 10001, 10000)
+	tcpConnect.UserName = helper.StrToPointer(username)
+	tcpConnect.Password = helper.StrToPointer(password)
 
 	defer tcpConnect.Conn.Close()
 	//do all operations on top of TLS
@@ -47,7 +54,6 @@ func main() {
 }
 
 func sendOPLTestMessages(tcpConnect *mtsclient.TCPConnect, wg *sync.WaitGroup) {
-
 	testEventsMap := map[int]enum.TestEvent{}
 	// Create some test events
 	testEventsMap[3] = enum.SendOPLPayload

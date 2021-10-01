@@ -18,9 +18,6 @@ import (
 	"github.com/niroopreddym/custom-tcpprotocol-go/model"
 )
 
-//UintSize max unsigned int size
-const UintSize = 32 << (^uint(0) >> 32 & 1) // 32 or 64
-
 const (
 	//MTSServer is Node ID constant for MTS Server
 	MTSServer = 1
@@ -28,15 +25,6 @@ const (
 	MTSRMSServer = 2
 	//MTSProvisioner Node ID constant for MTS Provisioner
 	MTSProvisioner = 3
-)
-
-const (
-	//MaxInt max signed integer value
-	MaxInt = 1<<(UintSize-1) - 1 // 1<<31 - 1 or 1<<63 - 1
-	//MinInt min signed int value
-	MinInt = -MaxInt - 1 // -1 << 31 or -1 << 63
-	//MaxUint is max unsigned int value
-	MaxUint = 1<<UintSize - 1 // 1<<32 - 1 or 1<<64 - 1
 )
 
 //Offset is the length of byte array to indicate the msg length
@@ -47,11 +35,13 @@ var (
 	ClientCertificate []byte
 	//JWT has the JWT data
 	JWT []byte
+	//KAppRMS rms key
+	KAppRMS = []byte{79, 157, 102, 210, 83, 34, 156, 117, 223, 190, 187, 27, 28, 63, 94, 214, 4, 98, 123, 98, 65, 20, 143, 60, 50, 62, 162, 115, 7, 46, 119, 8}
 )
 
 //TCPConnect logins
 type TCPConnect struct {
-	MTSClient        MTSClient
+	MTSClient        model.MTSClient
 	Hostname         string
 	Port             int
 	DefaultTimeOutMs int
@@ -59,12 +49,14 @@ type TCPConnect struct {
 	ServerBootDone   chan bool
 	Wg               sync.WaitGroup
 	IsAuthenticated  chan bool
+	UserName         *string
+	Password         *string
 }
 
 //NewTCPConnect ctor
 func NewTCPConnect(hostname string, port int, defaultTimeOutMs int) *TCPConnect {
 	return &TCPConnect{
-		MTSClient: MTSClient{
+		MTSClient: model.MTSClient{
 			Connected: false,
 		},
 		Hostname:         hostname,
@@ -77,28 +69,6 @@ func NewTCPConnect(hostname string, port int, defaultTimeOutMs int) *TCPConnect 
 	}
 }
 
-//GetConnection instantiates and gets the connection
-func GetConnection(connectionString string) (net.Conn, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err := r.(error)
-			fmt.Println(err)
-		}
-	}()
-
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true,
-	}
-
-	conn, err := tls.Dial("tcp", connectionString, tlsConfig)
-	if err != nil {
-		fmt.Println("error occured while establishing the connection: ", err)
-		return nil, err
-	}
-
-	return conn, err
-}
-
 //WithTLS connects with TLS
 func (connect *TCPConnect) WithTLS(certificate []byte) {
 	connect.MTSClient.UseTLS = true
@@ -108,7 +78,7 @@ func (connect *TCPConnect) WithTLS(certificate []byte) {
 //TCPServer returns the TCP server connection
 func (connect *TCPConnect) TCPServer(ClientCertificate []byte, errorChan chan error, authenticationCall func(errorChan chan error)) {
 	connectionString := strings.Join([]string{connect.Hostname, strconv.Itoa(connect.Port)}, ":")
-	conn, err := GetConnection(connectionString)
+	conn, err := helper.GetConnection(connectionString)
 	if err != nil {
 		fmt.Println("error while instantiating the connection", err)
 		os.Exit(1)
@@ -141,11 +111,10 @@ func (connect *TCPConnect) ConnectAndLogin(isAuthenticated chan bool, errorChan 
 }
 
 func (connect *TCPConnect) loginWithCertificate(errorChan chan error) {
-	kAppRMS := []byte{79, 157, 102, 210, 83, 34, 156, 117, 223, 190, 187, 27, 28, 63, 94, 214, 4, 98, 123, 98, 65, 20, 143, 60, 50, 62, 162, 115, 7, 46, 119, 8}
 
 	mtsLogin := model.MtsLogin{
 		AppID:             enum.RMSServer,
-		AppKey:            kAppRMS,
+		AppKey:            KAppRMS,
 		ClientCertificate: ClientCertificate,
 		Username:          nil,
 		Password:          nil,
@@ -158,7 +127,7 @@ func (connect *TCPConnect) loginWithCertificate(errorChan chan error) {
 
 	}
 
-	mtsLoginMessage := connect.CreateRequest(
+	mtsLoginMessage := helper.CreateRequest(
 		enum.Login,
 		nil,
 		MTSRMSServer,
@@ -172,15 +141,11 @@ func (connect *TCPConnect) loginWithCertificate(errorChan chan error) {
 }
 
 func (connect *TCPConnect) loginWithUsernameAndPassword(errorChan chan error) {
-	kAppRMS := []byte{79, 157, 102, 210, 83, 34, 156, 117, 223, 190, 187, 27, 28, 63, 94, 214, 4, 98, 123, 98, 65, 20, 143, 60, 50, 62, 162, 115, 7, 46, 119, 8}
-	username := "mtstest"
-	password := "Test123"
-
 	mtsLogin := model.MtsLogin{
 		AppID:    enum.RMSServer,
-		AppKey:   kAppRMS,
-		Username: &username,
-		Password: &password,
+		AppKey:   KAppRMS,
+		Username: connect.UserName,
+		Password: connect.Password,
 	}
 
 	mtsLoginByteData, err := json.Marshal(mtsLogin)
@@ -190,7 +155,7 @@ func (connect *TCPConnect) loginWithUsernameAndPassword(errorChan chan error) {
 
 	}
 
-	mtsLoginMessage := connect.CreateRequest(
+	mtsLoginMessage := helper.CreateRequest(
 		enum.Login,
 		nil,
 		MTSRMSServer,
@@ -216,46 +181,13 @@ func (connect *TCPConnect) SendAcknowledgmentToServer(mtsMessage *model.MTSMessa
 	case enum.RMSPing:
 		log.Print("Received RMS Ping request. Sending RMS Ping response.")
 		fmt.Println("JWT Token is : ", mtsMessage.JWT)
-		msgResponse := connect.CreateResponse(mtsMessage, enum.RMSPingResponse, nil, false, mtsMessage.JWT, make([]byte, 4))
-		return connect.Send(msgResponse, 1000000)
+		msgResponse := helper.CreateResponse(mtsMessage, enum.RMSPingResponse, nil, false, mtsMessage.JWT, make([]byte, 4))
+		return connect.Send(msgResponse)
 	default:
 		log.Print("Unknown message : ", mtsMessage.Route)
-		var responseMsg = connect.CreateErrorResponse(enum.InvalidRequest, enum.MtsErrorID.String(enum.InvalidRequest), mtsMessage, mtsMessage.Route, nil, mtsMessage.JWT)
-		return connect.Send(responseMsg, 1000000)
+		var responseMsg = helper.CreateErrorResponse(enum.InvalidRequest, enum.MtsErrorID.String(enum.InvalidRequest), mtsMessage, mtsMessage.Route, nil, mtsMessage.JWT)
+		return connect.Send(responseMsg)
 	}
-}
-
-//CreateErrorResponse error response
-func (connect *TCPConnect) CreateErrorResponse(errorID enum.MtsErrorID, errorMsg string, requestMessage *model.MTSMessage, responseType enum.MTSRequest, attrRoute *string, jwt *string) model.MTSMessage {
-	var errorResponseData = model.MtsErrorResponse{
-		MtsError:        errorID,
-		MtsErrorMessage: errorMsg,
-	}
-
-	errorResponseByteArray, err := json.Marshal(errorResponseData)
-	if err != nil {
-		fmt.Println("Error getting the client cert", err)
-	}
-
-	return connect.CreateResponse(requestMessage, responseType, attrRoute, true, jwt, errorResponseByteArray)
-}
-
-//CreateResponse creates a MTSMessage as Response
-func (connect *TCPConnect) CreateResponse(requestMessage *model.MTSMessage, responseType enum.MTSRequest, attrRoute *string, isError bool, jwt *string, data []byte) model.MTSMessage {
-	mtsMessage := model.MTSMessage{
-		Version:        1,
-		Route:          responseType,
-		SrcID:          requestMessage.SrcID,
-		DstID:          requestMessage.DstID,
-		RPCID:          requestMessage.RPCID,
-		Reply:          true,
-		IsError:        isError,
-		Data:           data,
-		AttributeRoute: attrRoute,
-		JWT:            jwt,
-	}
-
-	return mtsMessage
 }
 
 //Login login the user and returns the MtsLoginResponse
@@ -287,7 +219,7 @@ func (connect *TCPConnect) SendLoginPayload(mtsMessage model.MTSMessage, timeOut
 		return err
 	}
 
-	err = connect.send(mtsMessageByteData, timeOutMs)
+	err = connect.send(mtsMessageByteData)
 	if err != nil {
 		fmt.Println(err)
 		return err
@@ -297,14 +229,14 @@ func (connect *TCPConnect) SendLoginPayload(mtsMessage model.MTSMessage, timeOut
 }
 
 //Send sends the data to MTS Client
-func (connect *TCPConnect) Send(mtsMessage model.MTSMessage, timeOutMs int) error {
+func (connect *TCPConnect) Send(mtsMessage model.MTSMessage) error {
 
 	mtsMessageByteData, err := json.Marshal(mtsMessage)
 	if err != nil {
 		fmt.Println("error in marshalling the MTSMessage Data: ", err)
 	}
 
-	err = connect.send(mtsMessageByteData, timeOutMs)
+	err = connect.send(mtsMessageByteData)
 	if err != nil {
 		fmt.Println(err)
 		return err
@@ -401,7 +333,7 @@ func (connect *TCPConnect) ExtractCertData(mtsMessage model.MTSMessage) {
 }
 
 //WriteToConn writes to connection
-func WriteToConn(conn net.Conn, content []byte) (int, error) {
+func (connect *TCPConnect) WriteToConn(conn net.Conn, content []byte) (int, error) {
 	writer := bufio.NewWriterSize(conn, 1<<12)
 	number, err := writer.Write(content)
 	if err == nil {
@@ -424,7 +356,7 @@ func (connect *TCPConnect) SendTestOPLPayload(jwt *string) {
 		fmt.Println(err)
 	}
 
-	mtsLoginMessage := connect.CreateRequest(
+	mtsLoginMessage := helper.CreateRequest(
 		enum.OPL,
 		nil,
 		MTSRMSServer,
@@ -439,10 +371,10 @@ func (connect *TCPConnect) SendTestOPLPayload(jwt *string) {
 
 //SendOPLPayload Send an OPL Message
 func (connect *TCPConnect) SendOPLPayload(mtsOPLMessage model.MTSMessage) {
-	connect.Send(mtsOPLMessage, 1000000)
+	connect.Send(mtsOPLMessage)
 }
 
-func (connect *TCPConnect) send(msg []byte, timeOutMs int) error {
+func (connect *TCPConnect) send(msg []byte) error {
 	defer func() {
 		if r := recover(); r != nil {
 			err := r.(error)
@@ -455,7 +387,7 @@ func (connect *TCPConnect) send(msg []byte, timeOutMs int) error {
 	fmt.Println("sender payload json:", string(msg))
 
 	fmt.Println("byte array : ", data)
-	num, err := WriteToConn(connect.Conn, data)
+	num, err := connect.WriteToConn(connect.Conn, data)
 	if err != nil {
 		return fmt.Errorf("Sender: Write Error: %w", err)
 	}
@@ -475,37 +407,4 @@ func (connect *TCPConnect) Receieve() (bool, error) {
 
 	isDone, err := connect.ReadFromConn()
 	return isDone, err
-}
-
-//CreateRequest creates a MTSMessage for user login
-func (connect *TCPConnect) CreateRequest(requestType enum.MTSRequest, attrRoute *string, srcID int, dstID int, isError bool, jwt *string, data []byte) model.MTSMessage {
-	var rpcID int
-	var lastRPCID int
-	//if OPL request, set RpcId to 0 and don't increment LastRpcId
-	if requestType == enum.OPL {
-		rpcID = 0
-	} else {
-		if lastRPCID == MaxInt {
-			lastRPCID = 1
-		} else {
-			lastRPCID = lastRPCID + 1
-		}
-
-		rpcID = lastRPCID
-	}
-
-	mtsMessage := model.MTSMessage{
-		Version:        1,
-		Route:          requestType,
-		SrcID:          srcID,
-		DstID:          dstID,
-		RPCID:          rpcID,
-		Reply:          false,
-		IsError:        isError,
-		Data:           data,
-		AttributeRoute: attrRoute,
-		JWT:            jwt,
-	}
-
-	return mtsMessage
 }
