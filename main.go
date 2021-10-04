@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,20 +39,32 @@ func main() {
 	isAuthenticatedChan := make(chan bool)
 	errorChan := make(chan error)
 
-	tcpConnect.Wg.Add(1)
 	tcpConnect.ConnectAndLogin(isAuthenticatedChan, errorChan)
-	// err := <-errorChan
-	// if err != nil {
-	// 	fmt.Println(err)
-	// }
 
-	if <-tcpConnect.ServerBootDone {
-		tcpConnect.Wg.Add(1)
-		go sendOPLTestMessages(tcpConnect, &tcpConnect.Wg)
+	for {
+		select {
+		case isDone := <-tcpConnect.ServerBootDone:
+			if !isDone {
+				fmt.Println("Un-Authenticated")
+				os.Exit(1)
+			}
+
+			tcpConnect.Wg.Add(1)
+			go sendOPLTestMessages(tcpConnect, &tcpConnect.Wg)
+			tcpConnect.Wg.Wait()
+		case msg := <-errorChan:
+			fmt.Println("BOOM!", msg.Error())
+			if strings.Contains(msg.Error(), "use of closed network connection") {
+				time.Sleep(500 * time.Millisecond) // has to be exponential backoff mechanism
+			} else {
+				fmt.Println(msg)
+				os.Exit(1)
+			}
+		default:
+			fmt.Println("    .")
+			time.Sleep(500 * time.Millisecond)
+		}
 	}
-
-	log.Println("Ending MtsClientExample go")
-	tcpConnect.Wg.Wait()
 }
 
 func sendOPLTestMessages(tcpConnect *mtsclient.TCPConnect, wg *sync.WaitGroup) {

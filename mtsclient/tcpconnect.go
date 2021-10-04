@@ -175,18 +175,18 @@ func (connect *TCPConnect) Login(mtsLoginMessage model.MTSMessage, certificateRe
 
 	if err != nil {
 		fmt.Println("Error getting the client cert", err)
-		go func() { errorChan <- err }()
+		errorChan <- err
 
 	}
 
 	isDone, err := connect.Receieve()
 	if err != nil {
 		fmt.Println("error reading the data")
-		go func() { errorChan <- err }()
+		errorChan <- err
 	}
 
 	if isDone {
-		go func() { certificateReceived <- true }()
+		certificateReceived <- true
 	}
 }
 
@@ -331,11 +331,11 @@ func (connect *TCPConnect) ExtractCertData(mtsMessage model.MTSMessage) {
 	err := json.Unmarshal(responseData, &mtsResponse)
 	if err != nil {
 		fmt.Println("error occuredwhen unmarshalling the response data")
-		go func() { connect.IsAuthenticated <- false }()
+		connect.IsAuthenticated <- false
 	}
 
 	if mtsMessage.IsError == true {
-		go func() { connect.IsAuthenticated <- false }()
+		connect.IsAuthenticated <- false
 	}
 
 	ClientCertificate = mtsResponse.ClientCertificate
@@ -345,7 +345,7 @@ func (connect *TCPConnect) ExtractCertData(mtsMessage model.MTSMessage) {
 		JWT = nil
 	}
 
-	go func() { connect.IsAuthenticated <- true }()
+	connect.IsAuthenticated <- true
 }
 
 //Receieve receives the response
