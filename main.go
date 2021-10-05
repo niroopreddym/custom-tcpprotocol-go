@@ -3,15 +3,24 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/niroopreddym/custom-tcpprotocol-go/enum"
+	helper "github.com/niroopreddym/custom-tcpprotocol-go/helpers"
 	"github.com/niroopreddym/custom-tcpprotocol-go/mtsclient"
 )
 
 //TestElapsedSeconds intial time to trigger the fan out test events
 var TestElapsedSeconds = 1
+
+//get these values securely from the env
+const username = "mtstest"
+const password = "Test123"
 
 func main() {
 	defer func() {
@@ -21,74 +30,87 @@ func main() {
 		}
 	}()
 
-	testEventsMap := map[int]enum.TestEvent{}
+	fmt.Printf("Please press ctrl + c to stop the connection: ")
+	sigs := make(chan os.Signal, 1)
+	done := make(chan bool, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigs
+		fmt.Println()
+		fmt.Println(sig)
+		done <- true
+	}()
 
 	tcpConnect := mtsclient.NewTCPConnect("127.0.0.1", 10001, 10000)
-	tcpConnect.Init()
+	tcpConnect.UserName = helper.StrToPointer(username)
+	tcpConnect.Password = helper.StrToPointer(password)
+
 	defer tcpConnect.Conn.Close()
 	//do all operations on top of TLS
 	tcpConnect.WithTLS(nil)
 
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	go func(wg *sync.WaitGroup) {
-		err := tcpConnect.ConnectAndLogin()
-		if err != nil {
-			fmt.Println(err)
+	tcpConnect.ConnectAndLogin()
+
+	for {
+		select {
+		case isDone := <-tcpConnect.ServerBootDone:
+			if !isDone {
+				fmt.Println("Un-Authenticated")
+				os.Exit(1)
+			}
+
+			tcpConnect.Wg.Add(1)
+			go sendOPLTestMessages(tcpConnect, &tcpConnect.Wg)
+			tcpConnect.Wg.Wait()
+		case msg := <-tcpConnect.ErrorChan:
+			fmt.Println("BOOM!", msg.Error())
+			if strings.Contains(msg.Error(), "use of closed network connection") {
+				time.Sleep(500 * time.Millisecond) // has to be exponential backoff mechanism
+			} else {
+				fmt.Println(msg)
+				os.Exit(1)
+			}
+		case <-done:
+			return
+		default:
+			fmt.Println("    .")
+			time.Sleep(500 * time.Millisecond)
 		}
-		wg.Done()
-	}(&wg)
+	}
+}
 
-	wg.Add(1)
+func sendOPLTestMessages(tcpConnect *mtsclient.TCPConnect, wg *sync.WaitGroup) {
+	testEventsMap := map[int]enum.TestEvent{}
+	// Create some test events
+	testEventsMap[3] = enum.SendOPLPayload
+	testEventsMap[6] = enum.SendOPLPayload
+	testEventsMap[9] = enum.SendOPLPayload
+	testEventsMap[12] = enum.Exit
 
-	go func(wg *sync.WaitGroup) {
-		time.Sleep(10 * time.Second)
+	// Begin example
+	log.Println("Starting MtsClientExample in go")
 
-		// Create some test events
-		testEventsMap[3] = enum.SendOPLPayload
-		testEventsMap[6] = enum.SendOPLPayload
-		testEventsMap[9] = enum.SendOPLPayload
-		testEventsMap[12] = enum.Exit
+	exitTest := false
+	for !exitTest {
 
-		// Begin example
-		log.Println("Starting MtsClientExample in go")
-
-		exitTest := false
-		for !exitTest {
-			for !tcpConnect.MTSClient.Connected {
-				// tcpConnect.ConnectAndLogin()
-				if !tcpConnect.MTSClient.Connected {
-					log.Println("Trying to connect")
-					time.Sleep(3 * time.Second)
-				} else {
-					log.Println("Connected")
-				}
-			}
-
-			// Send messages within this program loop
-			if event, ok := testEventsMap[TestElapsedSeconds]; ok {
-				//do something here
-				switch event {
-				case enum.SendOPLPayload:
-					tcpConnect.SendTestOPLPayload(nil)
-					break
-				case enum.Exit:
-					exitTest = true
-					break
-				}
-			}
-
-			if !exitTest {
-				time.Sleep(1 * time.Second)
-				TestElapsedSeconds++
+		// Send messages within this program loop
+		if event, ok := testEventsMap[TestElapsedSeconds]; ok {
+			//do something here
+			switch event {
+			case enum.SendOPLPayload:
+				tcpConnect.SendTestOPLPayload()
+				break
+			case enum.Exit:
+				exitTest = true
+				break
 			}
 		}
 
-		wg.Done()
-	}(&wg)
+		if !exitTest {
+			time.Sleep(1 * time.Second)
+			TestElapsedSeconds++
+		}
+	}
 
-	// fmt.Println(tcpConnect)
-	log.Println("Ending MtsClientExample go")
-
-	wg.Wait()
+	wg.Done()
 }
