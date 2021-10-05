@@ -98,7 +98,7 @@ func sendOPLTestMessages(tcpConnect *mtsclient.TCPConnect, wg *sync.WaitGroup) {
 			//do something here
 			switch event {
 			case enum.SendOPLPayload:
-				tcpConnect.SendTestOPLPayload(nil)
+				tcpConnect.SendTestOPLPayload()
 				break
 			case enum.Exit:
 				exitTest = true
