@@ -420,4 +420,5 @@ func (connect *TCPConnect) SendMTSOPLPayload(mtsOPLPayload *model.MtsOplPayload)
 	)
 
 	connect.SendDataToServer(mtsLoginMessage)
+	connect.Wg.Done()
 }
