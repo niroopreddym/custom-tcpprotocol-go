@@ -376,29 +376,13 @@ func (connect *TCPConnect) SendLoginPayload(mtsMessage model.MTSMessage, timeOut
 
 //SendTestOPLPayload sends the test payload to the server
 func (connect *TCPConnect) SendTestOPLPayload() {
-	mtsOPLPayload := model.MtsOplPayload{
+	mtsOPLPayload := &model.MtsOplPayload{
 		RoomID:          "101",
 		ProxyMACAddress: nil,
 		Data:            make([]byte, 16),
 	}
 
-	strMtsOPLPayload, err := json.Marshal(mtsOPLPayload)
-	if err != nil {
-		fmt.Println("error occured in marshalling the OPLpayload data")
-		fmt.Println(err)
-	}
-
-	mtsLoginMessage := helper.CreateRequest(
-		enum.OPL,
-		nil,
-		MTSRMSServer,
-		MTSServer,
-		false,
-		helper.StrToPointer(string(JWT)),
-		strMtsOPLPayload,
-	)
-
-	connect.SendDataToServer(mtsLoginMessage)
+	connect.SendMTSOPLPayload(mtsOPLPayload)
 }
 
 //SendMTSOPLPayload sends the OPL payload to the server
