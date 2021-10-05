@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/niroopreddym/custom-tcpprotocol-go/enum"
@@ -28,6 +30,17 @@ func main() {
 		}
 	}()
 
+	fmt.Printf("Please press ctrl + c to stop the connection: ")
+	sigs := make(chan os.Signal, 1)
+	done := make(chan bool, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigs
+		fmt.Println()
+		fmt.Println(sig)
+		done <- true
+	}()
+
 	tcpConnect := mtsclient.NewTCPConnect("127.0.0.1", 10001, 10000)
 	tcpConnect.UserName = helper.StrToPointer(username)
 	tcpConnect.Password = helper.StrToPointer(password)
@@ -36,10 +49,7 @@ func main() {
 	//do all operations on top of TLS
 	tcpConnect.WithTLS(nil)
 
-	isAuthenticatedChan := make(chan bool)
-	errorChan := make(chan error)
-
-	tcpConnect.ConnectAndLogin(isAuthenticatedChan, errorChan)
+	tcpConnect.ConnectAndLogin()
 
 	for {
 		select {
@@ -52,7 +62,7 @@ func main() {
 			tcpConnect.Wg.Add(1)
 			go sendOPLTestMessages(tcpConnect, &tcpConnect.Wg)
 			tcpConnect.Wg.Wait()
-		case msg := <-errorChan:
+		case msg := <-tcpConnect.ErrorChan:
 			fmt.Println("BOOM!", msg.Error())
 			if strings.Contains(msg.Error(), "use of closed network connection") {
 				time.Sleep(500 * time.Millisecond) // has to be exponential backoff mechanism
@@ -60,6 +70,8 @@ func main() {
 				fmt.Println(msg)
 				os.Exit(1)
 			}
+		case <-done:
+			return
 		default:
 			fmt.Println("    .")
 			time.Sleep(500 * time.Millisecond)

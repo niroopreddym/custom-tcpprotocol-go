@@ -52,6 +52,7 @@ type TCPConnect struct {
 	IsAuthenticated  chan bool
 	UserName         *string
 	Password         *string
+	ErrorChan        chan error
 }
 
 //NewTCPConnect is the ctor that instantiates the struct
@@ -67,6 +68,7 @@ func NewTCPConnect(hostname string, port int, defaultTimeOutMs int) *TCPConnect 
 		ServerBootDone:   make(chan bool),
 		Wg:               sync.WaitGroup{},
 		IsAuthenticated:  make(chan bool),
+		ErrorChan:        make(chan error),
 	}
 }
 
@@ -77,7 +79,7 @@ func (connect *TCPConnect) WithTLS(certificate []byte) {
 }
 
 //TCPServer returns the TCP server connection
-func (connect *TCPConnect) TCPServer(ClientCertificate []byte, errorChan chan error, authenticationCall func(errorChan chan error)) {
+func (connect *TCPConnect) TCPServer(ClientCertificate []byte, authenticationCall func()) {
 	connectionString := strings.Join([]string{connect.Hostname, strconv.Itoa(connect.Port)}, ":")
 	conn, err := helper.GetConnection(connectionString)
 	if err != nil {
@@ -88,22 +90,22 @@ func (connect *TCPConnect) TCPServer(ClientCertificate []byte, errorChan chan er
 	connect.MTSClient.Connected = true
 	connect.Conn = conn
 
-	authenticationCall(errorChan)
+	authenticationCall()
 }
 
 //ConnectAndLogin connects and login the user
-func (connect *TCPConnect) ConnectAndLogin(isAuthenticated chan bool, errorChan chan error) {
-	go connect.TCPServer(nil, errorChan, connect.loginWithUsernameAndPassword)
+func (connect *TCPConnect) ConnectAndLogin() {
+	go connect.TCPServer(nil, connect.loginWithUsernameAndPassword)
 
 	if <-connect.IsAuthenticated {
 		connect.Conn.Close()
 	} else {
 		fmt.Println("UnAuthorized login creds")
-		go func() { errorChan <- fmt.Errorf("UnAuthorized login creds") }()
+		go func() { connect.ErrorChan <- fmt.Errorf("UnAuthorized login creds") }()
 	}
 
 	connect.WithTLS(ClientCertificate)
-	go connect.TCPServer(nil, errorChan, connect.loginWithCertificate)
+	go connect.TCPServer(nil, connect.loginWithCertificate)
 
 	if <-connect.IsAuthenticated {
 		fmt.Println("successfully booted up the server with the client certificate")
@@ -111,7 +113,7 @@ func (connect *TCPConnect) ConnectAndLogin(isAuthenticated chan bool, errorChan 
 	}
 }
 
-func (connect *TCPConnect) loginWithCertificate(errorChan chan error) {
+func (connect *TCPConnect) loginWithCertificate() {
 
 	mtsLogin := model.MtsLogin{
 		AppID:             enum.RMSServer,
@@ -124,7 +126,7 @@ func (connect *TCPConnect) loginWithCertificate(errorChan chan error) {
 	mtsLoginByteData, err := json.Marshal(mtsLogin)
 	if err != nil {
 		fmt.Println("error in marshalling the mtsLogin Data: ", err)
-		go func() { errorChan <- err }()
+		go func() { connect.ErrorChan <- err }()
 
 	}
 
@@ -138,10 +140,10 @@ func (connect *TCPConnect) loginWithCertificate(errorChan chan error) {
 		mtsLoginByteData,
 	)
 
-	connect.Login(mtsLoginMessage, connect.IsAuthenticated, errorChan)
+	connect.Login(mtsLoginMessage, connect.IsAuthenticated)
 }
 
-func (connect *TCPConnect) loginWithUsernameAndPassword(errorChan chan error) {
+func (connect *TCPConnect) loginWithUsernameAndPassword() {
 	mtsLogin := model.MtsLogin{
 		AppID:    enum.RMSServer,
 		AppKey:   KAppRMS,
@@ -152,7 +154,7 @@ func (connect *TCPConnect) loginWithUsernameAndPassword(errorChan chan error) {
 	mtsLoginByteData, err := json.Marshal(mtsLogin)
 	if err != nil {
 		fmt.Println("error in marshalling the mtsLogin Data: ", err)
-		go func() { errorChan <- err }()
+		go func() { connect.ErrorChan <- err }()
 
 	}
 
@@ -166,23 +168,22 @@ func (connect *TCPConnect) loginWithUsernameAndPassword(errorChan chan error) {
 		mtsLoginByteData,
 	)
 
-	connect.Login(mtsLoginMessage, connect.IsAuthenticated, errorChan)
+	connect.Login(mtsLoginMessage, connect.IsAuthenticated)
 }
 
 //Login login the user and returns the MtsLoginResponse
-func (connect *TCPConnect) Login(mtsLoginMessage model.MTSMessage, certificateReceived chan bool, errorChan chan error) {
+func (connect *TCPConnect) Login(mtsLoginMessage model.MTSMessage, certificateReceived chan bool) {
 	err := connect.SendLoginPayload(mtsLoginMessage, 1000000)
 
 	if err != nil {
 		fmt.Println("Error getting the client cert", err)
-		errorChan <- err
-
+		connect.ErrorChan <- err
 	}
 
 	isDone, err := connect.Receieve()
 	if err != nil {
 		fmt.Println("error reading the data")
-		errorChan <- err
+		connect.ErrorChan <- err
 	}
 
 	if isDone {
@@ -305,9 +306,6 @@ func (connect *TCPConnect) validateServerResponseLength(buff []byte) string {
 //ProcessDataSegment process this segment asynchronously
 func (connect *TCPConnect) ProcessDataSegment(dataSegmentString string) {
 	mtsResponseMessage := model.MTSMessage{}
-
-	// data := <-dataSegmentString
-
 	err := json.Unmarshal([]byte(dataSegmentString), &mtsResponseMessage)
 	if err != nil {
 		fmt.Println("error occured while unmarshalling datasegment: ", err)
