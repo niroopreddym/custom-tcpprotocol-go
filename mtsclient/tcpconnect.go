@@ -288,8 +288,6 @@ func (connect *TCPConnect) validateServerResponseLength(buff []byte) string {
 	// convert This length Of Response To data length
 	responseLengthInt := helper.ConvertByteToInt(lengthOfResponseBa)
 
-	fmt.Println("rquired response size: ", responseLengthInt)
-
 	if len(buff) < responseLengthInt+Offset {
 		return string(buff)
 	}
@@ -403,23 +401,23 @@ func (connect *TCPConnect) SendTestOPLPayload() {
 	connect.SendDataToServer(mtsLoginMessage)
 }
 
-// //SendMTSOPLPayload sends the OPL payload to the server
-// func (connect *TCPConnect) SendMTSOPLPayload(mtsOPLPayload *model.MtsOplPayload) {
-// 	strMtsOPLPayload, err := json.Marshal(mtsOPLPayload)
-// 	if err != nil {
-// 		fmt.Println("error occured in marshalling the OPLpayload data")
-// 		fmt.Println(err)
-// 	}
+//SendMTSOPLPayload sends the OPL payload to the server
+func (connect *TCPConnect) SendMTSOPLPayload(mtsOPLPayload *model.MtsOplPayload) {
+	strMtsOPLPayload, err := json.Marshal(mtsOPLPayload)
+	if err != nil {
+		fmt.Println("error occured in marshalling the OPLpayload data")
+		fmt.Println(err)
+	}
 
-// 	mtsLoginMessage := helper.CreateRequest(
-// 		enum.OPL,
-// 		nil,
-// 		MTSRMSServer,
-// 		MTSServer,
-// 		false,
-// 		helper.StrToPointer(string(JWT)),
-// 		strMtsOPLPayload,
-// 	)
+	mtsLoginMessage := helper.CreateRequest(
+		enum.OPL,
+		nil,
+		MTSRMSServer,
+		MTSServer,
+		false,
+		helper.StrToPointer(string(JWT)),
+		strMtsOPLPayload,
+	)
 
-// 	connect.SendDataToServer(mtsLoginMessage)
-// }
+	connect.SendDataToServer(mtsLoginMessage)
+}
