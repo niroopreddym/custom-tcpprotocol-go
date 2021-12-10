@@ -193,10 +193,11 @@ func (connect *TCPConnect) Login(mtsLoginMessage model.MTSMessage, certificateRe
 
 //SendAcknowledgmentToServer sends the ack back to the server
 func (connect *TCPConnect) SendAcknowledgmentToServer(mtsMessage *model.MTSMessage) error {
+	strJWT := string(JWT)
+	mtsMessage.JWT = &strJWT
+
 	switch mtsMessage.Route {
 	case enum.OPL:
-		// TODO: Route OPL Messages to nodes
-		//break
 		log.Println("OPL response")
 		strOplResponse, _ := json.Marshal(mtsMessage)
 		log.Println("received OPL response: ", strOplResponse)
@@ -376,6 +377,7 @@ func (connect *TCPConnect) SendLoginPayload(mtsMessage model.MTSMessage, timeOut
 
 //SendTestOPLPayload sends the test payload to the server
 func (connect *TCPConnect) SendTestOPLPayload() {
+	//101 is the operating RoomID
 	mtsOPLPayload := model.MtsOplPayload{
 		RoomID:          "101",
 		ProxyMACAddress: nil,

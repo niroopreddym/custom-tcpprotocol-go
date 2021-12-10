@@ -13,8 +13,8 @@ func CreateResponse(requestMessage *model.MTSMessage, responseType enum.MTSReque
 	mtsMessage := model.MTSMessage{
 		Version:        1,
 		Route:          responseType,
-		SrcID:          requestMessage.SrcID,
-		DstID:          requestMessage.DstID,
+		SrcID:          requestMessage.DstID,
+		DstID:          requestMessage.SrcID,
 		RPCID:          requestMessage.RPCID,
 		Reply:          true,
 		IsError:        isError,
