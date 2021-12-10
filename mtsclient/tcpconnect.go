@@ -242,8 +242,6 @@ func (connect *TCPConnect) send(msg []byte) error {
 	data := helper.PrepareData(msg)
 	//sending message
 	fmt.Println("sender payload json:", string(msg))
-
-	fmt.Println("byte array : ", data)
 	num, err := connect.WriteToConn(data)
 	if err != nil {
 		return fmt.Errorf("Sender: Write Error: %w", err)
