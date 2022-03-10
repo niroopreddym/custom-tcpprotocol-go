@@ -21,6 +21,7 @@ var TestElapsedSeconds = 1
 //get these values securely from the env
 const username = "mtstest"
 const password = "Test123"
+const port = 10002
 
 func main() {
 	defer func() {
@@ -41,7 +42,7 @@ func main() {
 		done <- true
 	}()
 
-	tcpConnect := mtsclient.NewTCPConnect("127.0.0.1", 10001, 10000)
+	tcpConnect := mtsclient.NewTCPConnect("127.0.0.1", port, 10000)
 	tcpConnect.UserName = helper.StrToPointer(username)
 	tcpConnect.Password = helper.StrToPointer(password)
 
@@ -86,6 +87,7 @@ func sendOPLTestMessages(tcpConnect *mtsclient.TCPConnect, wg *sync.WaitGroup) {
 	testEventsMap[6] = enum.SendOPLPayload
 	testEventsMap[9] = enum.SendOPLPayload
 	testEventsMap[12] = enum.Exit
+	// testEventsMap[6] = enum.Exit
 
 	// Begin example
 	log.Println("Starting MtsClientExample in go")
