@@ -277,6 +277,7 @@ func (connect *TCPConnect) ReadFromConn() (bool, error) {
 
 		finalstring = finalstring + string(buff)
 		finalstring = connect.validateServerResponseLength([]byte(finalstring))
+		fmt.Println(finalstring)
 	}
 }
 
